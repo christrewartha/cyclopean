@@ -1,0 +1,32 @@
+# --- Unreal generated ---
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/Android_ASTC/
+Plugins/**/Binaries/
+Plugins/**/Intermediate/
+
+# --- IDE ---
+.vs/
+.vscode/
+.idea/
+*.sln
+*.VC.db
+*.VC.opendb
+*.suo
+*.sdf
+
+# --- Secrets: never commit (repo is public) ---
+# Android release signing key and its passwords.
+*.keystore
+*.jks
+Config/UserEngine.ini
+Config/User*.ini
+
+# --- Third-party content that can't be redistributed ---
+# "Low Poly Nature" (FAB). Install it from FAB into Content/VRS_LowPolyNature to open L_Arena.
+Content/VRS_LowPolyNature/
+
+# Generated cook logs
+Build/*/FileOpenOrder/
