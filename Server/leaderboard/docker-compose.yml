@@ -1,0 +1,11 @@
+services:
+  leaderboard:
+    build: .
+    restart: unless-stopped
+    environment:
+      LEADERBOARD_SECRET: ${LEADERBOARD_SECRET:?set LEADERBOARD_SECRET in .env}
+    volumes:
+      - ./data:/data
+    ports:
+      # Localhost only: cloudflared on the host routes cyclopean.christrewartha.com here.
+      - "127.0.0.1:8797:8797"

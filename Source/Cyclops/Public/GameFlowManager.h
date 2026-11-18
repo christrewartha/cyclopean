@@ -5,6 +5,8 @@
 #include "GameFlowManager.generated.h"
 
 class AEnemySpawner;
+struct FLeaderboardResult;
+struct FRunResult;
 class UInputAction;
 class UMaterialInterface;
 class USoundBase;
@@ -19,6 +21,7 @@ enum class EGameFlowState : uint8
 	Title,
 	Playing,
 	Paused,
+	GameOver,
 };
 
 UENUM()
@@ -29,6 +32,11 @@ enum class EMenuButton : uint8
 	Resume,
 	Restart,
 	MainMenu,
+	PlayAgain,
+	EditName,
+	LetterUp,     // Param = letter index
+	LetterDown,
+	NameDone,
 };
 
 /**
@@ -144,16 +152,34 @@ private:
 		UStaticMeshComponent* Visual = nullptr;  // rounded pill
 		UTextRenderComponent* Label = nullptr;
 		EMenuButton Action = EMenuButton::None;
+		int32 Param = 0;
+		FVector2D Size = FVector2D::ZeroVector;  // cm, horizontal x vertical
 		float Charge = 0.f;
 		float LastHitTime = -1.f;
 	};
 
 	void HandlePauseInput(const FInputActionValue& Value);
-	void ConfigureButton(int32 Index, EMenuButton Action, const FString& Text);
-	void ShowMenu(const FString& Title, const FString& Subtitle);
+	/** Position is (Y, Z) on the menu plane; +Y is the player's left. */
+	void ConfigureButton(int32 Index, EMenuButton Action, const FString& Text, const FVector2D& Position, const FVector2D& Size, float TextSize = 7.5f, int32 Param = 0);
+	void ClearButtons();
+	void ShowMenu(const FString& Title, const FString& Subtitle, bool bReposition = true);
 	void HideMenu();
 	void PlaceInFrontOfPlayer();
-	void PressButton(EMenuButton Action);
+	void PressButton(EMenuButton Action, int32 Param);
+
+	// Game over / initials / leaderboard.
+	void HandleRunEnded(const FRunResult& Result);
+	void ShowGameOver(bool bReposition);
+	void ShowInitialsEditor(bool bReposition);
+	void RefreshGameOverText();
+	void RefreshInitialsLetters();
+	void SubmitLastRun();
+	void FetchLeaderboard();
+	void ApplyLeaderboard(const FLeaderboardResult& Result, bool bFromSubmit);
+	void SetLeaderboardMessage(const FString& Message);
+	void SetLeaderboardVisible(bool bVisible);
+	void SetInitialsVisible(bool bVisible);
+	class ULeaderboardSubsystem* GetLeaderboard() const;
 	void PlayUISound(USoundBase* Sound) const;
 	/** Applies pause state to every optic blast in the world (energy frozen while paused). */
 	void SetBeamsPaused(bool bPaused, bool bRefill) const;
@@ -174,11 +200,12 @@ private:
 	TObjectPtr<UStaticMeshComponent> BackgroundPanel;
 
 	/** Centre, left, right: invisible hit volumes the beam presses. */
-	UPROPERTY(VisibleAnywhere, Category = "Game Flow")
+	// Transient: rebuilt by the constructor, so placed instances pick up a changed button count.
+	UPROPERTY(VisibleAnywhere, Transient, Category = "Game Flow")
 	TArray<TObjectPtr<UStaticMeshComponent>> ButtonPanels;
 
 	/** Rounded pill visuals, one per button. */
-	UPROPERTY(VisibleAnywhere, Category = "Game Flow")
+	UPROPERTY(VisibleAnywhere, Transient, Category = "Game Flow")
 	TArray<TObjectPtr<UStaticMeshComponent>> ButtonVisuals;
 
 	// Title graphic: a bat getting zapped.
@@ -206,11 +233,43 @@ private:
 	UPROPERTY(VisibleAnywhere, Category = "Game Flow|Graphic")
 	TObjectPtr<UStaticMeshComponent> GraphicImpact;
 
-	UPROPERTY(VisibleAnywhere, Category = "Game Flow")
+	UPROPERTY(VisibleAnywhere, Transient, Category = "Game Flow")
 	TArray<TObjectPtr<UTextRenderComponent>> ButtonLabels;
+
+	// Initials editor: three big letters.
+	UPROPERTY(VisibleAnywhere, Transient, Category = "Game Flow|Initials")
+	TArray<TObjectPtr<UTextRenderComponent>> InitialLetters;
+
+	// Leaderboard side panel, angled in on the player's right.
+	UPROPERTY(VisibleAnywhere, Category = "Game Flow|Leaderboard")
+	TObjectPtr<USceneComponent> LeaderboardRoot;
+
+	UPROPERTY(VisibleAnywhere, Category = "Game Flow|Leaderboard")
+	TObjectPtr<UStaticMeshComponent> LeaderboardPanel;
+
+	UPROPERTY(VisibleAnywhere, Category = "Game Flow|Leaderboard")
+	TObjectPtr<UTextRenderComponent> LeaderboardTitle;
+
+	/** Rank, name, score columns (one line per entry), then a centred status message. */
+	UPROPERTY(VisibleAnywhere, Transient, Category = "Game Flow|Leaderboard")
+	TArray<TObjectPtr<UTextRenderComponent>> LeaderboardColumns;
 
 	TArray<FButtonSlot> Slots;
 	EGameFlowState State = EGameFlowState::Title;
 	bool bMenuVisible = false;
 	float MenuOpenTime = 0.f;
+
+	// Last finished run.
+	int32 LastScore = 0;
+	int32 LastKills = 0;
+	float LastDuration = 0.f;
+	int32 LastRank = 0;
+	bool bLastWasBest = false;
+	bool bLastSubmitted = false;
+	bool bSubmitting = false;
+	bool bLastSubmitOnline = false;
+
+	FString EditInitials;
+	bool bEditingInitials = false;
+	int32 LeaderboardRequestId = 0;
 };

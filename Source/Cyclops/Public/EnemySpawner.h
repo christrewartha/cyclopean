@@ -8,6 +8,16 @@ class AFlyingEnemy;
 class USoundBase;
 class UTextRenderComponent;
 
+/** Final stats of a run, broadcast when the player runs out of lives. */
+struct FRunResult
+{
+	int32 Score = 0;
+	int32 Kills = 0;
+	float Duration = 0.f;   // seconds of play, excluding pauses
+};
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnRunEnded, const FRunResult&);
+
 /**
  * Spawns flying enemies around the player and keeps score.
  *
@@ -44,14 +54,40 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Spawner")
 	void SetScoreboardVisible(bool bVisible);
 
-	void NotifyEnemyKilled(AFlyingEnemy* Enemy);
+	/** bOneShot: killed by a single hit (the opening burst) - earns the accuracy bonus. */
+	void NotifyEnemyKilled(AFlyingEnemy* Enemy, bool bOneShot);
 	void NotifyEnemyReachedPlayer(AFlyingEnemy* Enemy);
+
+	/** Fires once when lives reach zero; the spawner has already stopped and cleared enemies. */
+	FOnRunEnded OnRunEnded;
 
 	UFUNCTION(BlueprintPure, Category = "Spawner")
 	int32 GetKills() const { return Kills; }
 
 	UFUNCTION(BlueprintPure, Category = "Spawner")
 	int32 GetHitsTaken() const { return HitsTaken; }
+
+	UFUNCTION(BlueprintPure, Category = "Spawner")
+	int32 GetScore() const { return Score; }
+
+	UFUNCTION(BlueprintPure, Category = "Spawner")
+	int32 GetLives() const { return Lives; }
+
+	/** Current combo multiplier (1-4) from consecutive kills without being hit. */
+	UFUNCTION(BlueprintPure, Category = "Spawner")
+	int32 GetMultiplier() const;
+
+	// ---- Rules ----
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spawner|Rules", meta = (ClampMin = "1"))
+	int32 MaxLives = 5;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spawner|Rules", meta = (ClampMin = "0"))
+	int32 PointsPerKill = 100;
+
+	/** Extra points for a one-shot kill. Keep (PointsPerKill + OneShotBonus) x 4 in sync with the server's MAX_POINTS_PER_KILL. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spawner|Rules", meta = (ClampMin = "0"))
+	int32 OneShotBonus = 50;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawner")
 	TSubclassOf<AFlyingEnemy> EnemyClass;
@@ -122,6 +158,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spawner|Feedback", meta = (Units = "s"))
 	float HitHapticDuration = 0.25f;
 
+	// ---- HUD (head-locked, either side of the optic blast energy bar) ----
+
+	/** Text height at the bar's distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spawner|HUD", meta = (Units = "cm"))
+	float HudTextSize = 2.2f;
+
+	/** Space between the end of the bar and the text. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spawner|HUD", meta = (Units = "cm"))
+	float HudGap = 1.5f;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -134,9 +180,19 @@ private:
 	float GetCurrentEnemySpeed() const;
 	void UpdateScoreboard();
 	void StopHaptics();
+	/** Moves the HUD texts onto the HMD camera beside the energy bar; false until the pawn exists. */
+	bool AttachHudToCamera();
 
+	/** Score + combo, left of the energy bar. */
 	UPROPERTY(VisibleAnywhere, Category = "Spawner")
 	TObjectPtr<UTextRenderComponent> Scoreboard;
+
+	/** Lives, right of the energy bar. */
+	UPROPERTY(VisibleAnywhere, Category = "Spawner")
+	TObjectPtr<UTextRenderComponent> LivesText;
+
+	bool bHudAttached = false;
+	bool bHudVisible = true;
 
 	TArray<TWeakObjectPtr<AFlyingEnemy>> AliveEnemies;
 	FTimerHandle SpawnTimer;
@@ -144,5 +200,15 @@ private:
 	float CurrentInterval = 0.f;
 	int32 Kills = 0;
 	int32 HitsTaken = 0;
+	int32 Score = 0;
+	int32 Lives = 5;
+	int32 Streak = 0;          // kills since last hit
+	bool bRunActive = false;
+	double RunStartTime = 0.0;
+	double PausedSince = 0.0;
+	double TotalPausedTime = 0.0;
 	bool bGamePaused = false;
+
+	void EndRun();
+	float GetRunDuration() const;
 };

@@ -3,7 +3,9 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/TextRenderComponent.h"
+#include "CyclopsSaveGame.h"
 #include "Engine/DamageEvents.h"
+#include "Engine/GameInstance.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EnemySpawner.h"
@@ -13,6 +15,7 @@
 #include "GameFramework/PlayerController.h"
 #include "InputAction.h"
 #include "Kismet/GameplayStatics.h"
+#include "LeaderboardSubsystem.h"
 #include "Materials/MaterialInterface.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
@@ -20,14 +23,35 @@
 namespace
 {
 	// Menu faces the player along +X (text renders towards +X). +Y is the player's left, Z up.
+	constexpr int32 MaxButtons = 8;
 	const float ButtonZ = -12.f;
-	const FVector ButtonOffsets[] = { FVector(0.f, 0.f, ButtonZ), FVector(0.f, 72.f, ButtonZ), FVector(0.f, -72.f, ButtonZ) };
-	const FVector ButtonScale(0.04f, 0.6f, 0.2f); // invisible 60 x 20 cm hit volume (100 cm cube)
 	const FVector2D ButtonSize(60.f, 19.f);
+	const float ButtonDepth = 0.04f; // hit volume thickness (x 100 cm cube)
+
+	// Standard three-button row: centre, left, right.
+	const FVector2D RowCentre(0.f, ButtonZ);
+	const FVector2D RowLeft(72.f, ButtonZ);
+	const FVector2D RowRight(-72.f, ButtonZ);
 
 	// Background panel.
 	const FVector PanelCentre(-3.f, 0.f, 20.f);
 	const FVector2D PanelSize(215.f, 122.f);
+
+	// Initials editor: three letters with + above and - below, OK underneath.
+	const float LetterSpacing = 34.f;
+	const float LetterZ = 12.f;
+	const FVector2D LetterButtonSize(24.f, 13.f);
+	const float LetterUpZ = 34.f;
+	const float LetterDownZ = -10.f;
+	const FVector2D OkPosition(0.f, -29.f);
+	const FVector2D OkSize(50.f, 15.f);
+	const TCHAR* InitialsCharset = TEXT("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+
+	// Leaderboard panel: hinged off the main panel's right edge and turned in towards the player.
+	const FVector LeaderboardLocation(21.f, -153.f, 20.f);
+	const float LeaderboardYaw = 30.f;
+	const FVector2D LeaderboardSize(95.f, 122.f);
+	const float LeaderboardRowSize = 7.f;
 
 	// Title graphic: bat floats above the panel, zapped by a beam from the upper left.
 	const FVector GraphicBatLocation(6.f, -28.f, 112.f);
@@ -91,6 +115,11 @@ namespace
 	{
 		Panel->SetCollisionEnabled(bEnabled ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
 	}
+
+	FString JoinLines(const TArray<FString>& Lines)
+	{
+		return FString::Join(Lines, TEXT("\n"));
+	}
 }
 
 AGameFlowManager::AGameFlowManager()
@@ -119,13 +148,12 @@ AGameFlowManager::AGameFlowManager()
 	TitleText = MakeText(this, TEXT("TitleText"), MenuRoot, FVector(0.f, 0.f, 56.f), 26.f, FColor(255, 90, 60));
 	SubtitleText = MakeText(this, TEXT("SubtitleText"), MenuRoot, FVector(0.f, 0.f, 30.f), 7.f, FColor(200, 210, 220));
 
-	for (int32 i = 0; i < UE_ARRAY_COUNT(ButtonOffsets); ++i)
+	// Button slots; each screen positions and sizes the ones it uses (ConfigureButton).
+	for (int32 i = 0; i < MaxButtons; ++i)
 	{
 		// Invisible hit volume (a real box, so the beam's trace reliably hits it).
 		UStaticMeshComponent* Panel = CreateDefaultSubobject<UStaticMeshComponent>(*FString::Printf(TEXT("ButtonPanel%d"), i));
 		Panel->SetupAttachment(MenuRoot);
-		Panel->SetRelativeLocation(ButtonOffsets[i]);
-		Panel->SetRelativeScale3D(ButtonScale);
 		Panel->SetCollisionObjectType(ECC_WorldDynamic);
 		Panel->SetCollisionResponseToAllChannels(ECR_Ignore);
 		Panel->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block); // the beam's trace channel
@@ -135,15 +163,44 @@ AGameFlowManager::AGameFlowManager()
 		Panel->SetVisibility(false);
 		ButtonPanels.Add(Panel);
 
-		UStaticMeshComponent* Visual = MakeVisual(this, *FString::Printf(TEXT("ButtonVisual%d"), i), MenuRoot, ButtonOffsets[i] + FVector(1.f, 0.f, 0.f));
+		UStaticMeshComponent* Visual = MakeVisual(this, *FString::Printf(TEXT("ButtonVisual%d"), i), MenuRoot, FVector::ZeroVector);
 		Visual->SetRelativeRotation(PlaneFacingPlayer);
 		// Always draw over the background panel (otherwise distance sorting puts the side pills behind it).
 		Visual->SetTranslucentSortPriority(1);
 		ButtonVisuals.Add(Visual);
 
-		ButtonLabels.Add(MakeText(this, *FString::Printf(TEXT("ButtonLabel%d"), i), MenuRoot,
-			ButtonOffsets[i] + FVector(3.f, 0.f, 0.f), 7.5f, FColor::White));
+		ButtonLabels.Add(MakeText(this, *FString::Printf(TEXT("ButtonLabel%d"), i), MenuRoot, FVector::ZeroVector, 7.5f, FColor::White));
 	}
+
+	for (int32 i = 0; i < 3; ++i)
+	{
+		InitialLetters.Add(MakeText(this, *FString::Printf(TEXT("InitialLetter%d"), i), MenuRoot,
+			FVector(3.f, LetterSpacing * (1 - i), LetterZ), 22.f, FColor(255, 200, 120)));
+	}
+
+	// Leaderboard side panel.
+	LeaderboardRoot = CreateDefaultSubobject<USceneComponent>(TEXT("LeaderboardRoot"));
+	LeaderboardRoot->SetupAttachment(MenuRoot);
+	LeaderboardRoot->SetRelativeLocationAndRotation(LeaderboardLocation, FRotator(0.f, LeaderboardYaw, 0.f));
+
+	LeaderboardPanel = MakeVisual(this, TEXT("LeaderboardPanel"), LeaderboardRoot, FVector::ZeroVector);
+	LeaderboardPanel->SetRelativeRotation(PlaneFacingPlayer);
+
+	LeaderboardTitle = MakeText(this, TEXT("LeaderboardTitle"), LeaderboardRoot, FVector(3.f, 0.f, 49.f), 10.f, FColor(255, 90, 60));
+	LeaderboardTitle->SetText(FText::FromString(TEXT("TOP 10")));
+
+	// Columns: rank and name left-aligned (text runs towards -Y), score right-aligned at the far edge.
+	const float ColumnY[] = { 40.f, 24.f, -40.f };
+	const EHorizTextAligment ColumnAlign[] = { EHTA_Left, EHTA_Left, EHTA_Right };
+	for (int32 i = 0; i < 3; ++i)
+	{
+		UTextRenderComponent* Column = MakeText(this, *FString::Printf(TEXT("LeaderboardColumn%d"), i), LeaderboardRoot,
+			FVector(3.f, ColumnY[i], 38.f), LeaderboardRowSize, i == 1 ? FColor::White : FColor(200, 210, 220));
+		Column->SetHorizontalAlignment(ColumnAlign[i]);
+		Column->SetVerticalAlignment(EVRTA_TextTop);
+		LeaderboardColumns.Add(Column);
+	}
+	LeaderboardColumns.Add(MakeText(this, TEXT("LeaderboardMessage"), LeaderboardRoot, FVector(3.f, 0.f, 5.f), LeaderboardRowSize, FColor(200, 210, 220)));
 
 	// Title graphic: same proportions as AFlyingEnemy, scaled down.
 	GraphicBat = CreateDefaultSubobject<USceneComponent>(TEXT("GraphicBat"));
@@ -193,6 +250,10 @@ void AGameFlowManager::ApplyMeshesAndMaterials()
 	BackgroundPanel->SetStaticMesh(PanelMesh);
 	BackgroundPanel->SetMaterial(0, PanelMaterial);
 	SetPanelShape(BackgroundPanel, PanelSize, 12.f, PanelFill, PanelRim, 0.f);
+
+	LeaderboardPanel->SetStaticMesh(PanelMesh);
+	LeaderboardPanel->SetMaterial(0, PanelMaterial);
+	SetPanelShape(LeaderboardPanel, LeaderboardSize, 12.f, PanelFill, PanelRim, 0.f);
 
 	for (UStaticMeshComponent* Visual : ButtonVisuals)
 	{
@@ -282,6 +343,13 @@ void AGameFlowManager::BeginPlay()
 		}
 	}
 
+	if (Spawner)
+	{
+		Spawner->OnRunEnded.AddUObject(this, &AGameFlowManager::HandleRunEnded);
+	}
+
+	SetInitialsVisible(false);
+	SetLeaderboardVisible(false);
 	HideMenu();
 	// Give the HMD a moment to report a real pose so the title appears in front of the player.
 	FTimerHandle Handle;
@@ -292,31 +360,52 @@ void AGameFlowManager::HandlePauseInput(const FInputActionValue& Value)
 {
 	switch (State)
 	{
-	case EGameFlowState::Title:   StartGame(); break;
+	case EGameFlowState::Title:
+		if (!bEditingInitials)
+		{
+			StartGame();
+		}
+		break;
 	case EGameFlowState::Playing: PauseGame(); break;
 	case EGameFlowState::Paused:  ResumeGame(); break;
+	default: break; // game over: choose from the menu
 	}
 }
 
 void AGameFlowManager::ShowTitle()
 {
 	State = EGameFlowState::Title;
+	bEditingInitials = false;
 	if (Spawner)
 	{
 		Spawner->ResetSpawner();
 	}
 	SetBeamsPaused(false, /*bRefill*/ true);
-	ConfigureButton(0, EMenuButton::Start, TEXT("START"));
-	ConfigureButton(1, EMenuButton::None, FString());
-	ConfigureButton(2, EMenuButton::None, FString());
-	ShowMenu(TEXT("CYCLOPS"), TEXT("Blast START to begin      Menu button pauses"));
+
+	const UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
+	ClearButtons();
+	ConfigureButton(0, EMenuButton::Start, TEXT("START"), RowCentre, ButtonSize);
+	ConfigureButton(1, EMenuButton::EditName, Save->Initials.IsEmpty() ? FString(TEXT("SET NAME")) : TEXT("NAME ") + Save->Initials, RowRight, ButtonSize);
+
+	FString Subtitle = TEXT("Blast START to begin      Menu button pauses");
+	if (Save->BestScore > 0)
+	{
+		Subtitle += FString::Printf(TEXT("\nYour best: %d"), Save->BestScore);
+	}
+	SetInitialsVisible(false);
+	SetLeaderboardVisible(true);
+	ShowMenu(TEXT("CYCLOPS"), Subtitle);
+	FetchLeaderboard();
 }
 
 void AGameFlowManager::StartGame()
 {
 	HideMenu();
-	// Restarting from the pause menu: unfreeze and start with a full charge.
-	SetBeamsPaused(false, /*bRefill*/ State == EGameFlowState::Paused);
+	SetInitialsVisible(false);
+	SetLeaderboardVisible(false);
+	bEditingInitials = false;
+	// Restarting from the pause or game-over menu: unfreeze and start with a full charge.
+	SetBeamsPaused(false, /*bRefill*/ State == EGameFlowState::Paused || State == EGameFlowState::GameOver);
 	State = EGameFlowState::Playing;
 	if (Spawner)
 	{
@@ -339,12 +428,15 @@ void AGameFlowManager::PauseGame()
 	SetBeamsPaused(true, /*bRefill*/ false);
 	PlayUISound(PauseSound);
 
-	ConfigureButton(0, EMenuButton::Resume, TEXT("RESUME"));
-	ConfigureButton(1, EMenuButton::Restart, TEXT("RESTART"));
-	ConfigureButton(2, EMenuButton::MainMenu, TEXT("MAIN MENU"));
+	ClearButtons();
+	ConfigureButton(0, EMenuButton::Resume, TEXT("RESUME"), RowCentre, ButtonSize);
+	ConfigureButton(1, EMenuButton::Restart, TEXT("RESTART"), RowLeft, ButtonSize);
+	ConfigureButton(2, EMenuButton::MainMenu, TEXT("MAIN MENU"), RowRight, ButtonSize);
 	const FString Score = Spawner
-		? FString::Printf(TEXT("Kills %d    Hits %d"), Spawner->GetKills(), Spawner->GetHitsTaken())
+		? FString::Printf(TEXT("Score %d    Lives %d"), Spawner->GetScore(), Spawner->GetLives())
 		: FString();
+	SetInitialsVisible(false);
+	SetLeaderboardVisible(false);
 	ShowMenu(TEXT("PAUSED"), Score);
 }
 
@@ -364,6 +456,240 @@ void AGameFlowManager::ResumeGame()
 	PlayUISound(PauseSound);
 }
 
+// ---- Game over ----
+
+void AGameFlowManager::HandleRunEnded(const FRunResult& Result)
+{
+	State = EGameFlowState::GameOver;
+	LastScore = Result.Score;
+	LastKills = Result.Kills;
+	LastDuration = Result.Duration;
+	LastRank = 0;
+	bLastSubmitted = false;
+	bSubmitting = false;
+
+	UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
+	bLastWasBest = LastScore > Save->BestScore;
+	if (bLastWasBest)
+	{
+		Save->BestScore = LastScore;
+		Save->Save();
+	}
+
+	// Frozen at full so menu taps and holds always work.
+	SetBeamsPaused(true, /*bRefill*/ true);
+	PlayUISound(PauseSound);
+
+	if (Save->Initials.IsEmpty())
+	{
+		// First game on this headset: ask for initials, then submit.
+		ShowInitialsEditor(/*bReposition*/ true);
+	}
+	else
+	{
+		SubmitLastRun();
+		ShowGameOver(/*bReposition*/ true);
+	}
+}
+
+void AGameFlowManager::ShowGameOver(bool bReposition)
+{
+	bEditingInitials = false;
+	const UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
+
+	ClearButtons();
+	ConfigureButton(0, EMenuButton::PlayAgain, TEXT("PLAY AGAIN"), RowCentre, ButtonSize);
+	ConfigureButton(1, EMenuButton::MainMenu, TEXT("MAIN MENU"), RowLeft, ButtonSize);
+	ConfigureButton(2, EMenuButton::EditName, TEXT("NAME ") + Save->Initials, RowRight, ButtonSize);
+
+	SetInitialsVisible(false);
+	SetLeaderboardVisible(true);
+	ShowMenu(TEXT("GAME OVER"), FString(), bReposition);
+	RefreshGameOverText();
+}
+
+void AGameFlowManager::RefreshGameOverText()
+{
+	if (State != EGameFlowState::GameOver || bEditingInitials)
+	{
+		return;
+	}
+	const UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
+	FString Text = bLastWasBest
+		? FString::Printf(TEXT("NEW BEST!    Score %d"), LastScore)
+		: FString::Printf(TEXT("Score %d      Best %d"), LastScore, Save->BestScore);
+
+	const ULeaderboardSubsystem* Leaderboard = GetLeaderboard();
+	if (Leaderboard && Leaderboard->IsConfigured())
+	{
+		if (bSubmitting)
+		{
+			Text += TEXT("\nSending score...");
+		}
+		else if (LastRank > 0)
+		{
+			Text += FString::Printf(TEXT("\nLeaderboard rank #%d"), LastRank);
+		}
+		else if (bLastSubmitted)
+		{
+			Text += bLastSubmitOnline ? TEXT("\nScore not accepted by server") : TEXT("\nOffline - score will be sent later");
+		}
+	}
+	SubtitleText->SetText(FText::FromString(Text));
+}
+
+void AGameFlowManager::ShowInitialsEditor(bool bReposition)
+{
+	bEditingInitials = true;
+	const UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
+	EditInitials = Save->Initials.Len() == 3 ? Save->Initials : FString(TEXT("AAA"));
+
+	// Energy frozen at full while picking letters (also when opened from the title screen).
+	SetBeamsPaused(true, /*bRefill*/ true);
+
+	ClearButtons();
+	for (int32 i = 0; i < 3; ++i)
+	{
+		const float Y = LetterSpacing * (1 - i);
+		ConfigureButton(i, EMenuButton::LetterUp, TEXT("+"), FVector2D(Y, LetterUpZ), LetterButtonSize, 10.f, i);
+		ConfigureButton(3 + i, EMenuButton::LetterDown, TEXT("-"), FVector2D(Y, LetterDownZ), LetterButtonSize, 10.f, i);
+	}
+	ConfigureButton(6, EMenuButton::NameDone, TEXT("OK"), OkPosition, OkSize);
+
+	RefreshInitialsLetters();
+	SetInitialsVisible(true);
+	ShowMenu(TEXT("INITIALS"), FString(), bReposition);
+}
+
+void AGameFlowManager::RefreshInitialsLetters()
+{
+	for (int32 i = 0; i < InitialLetters.Num(); ++i)
+	{
+		InitialLetters[i]->SetText(FText::FromString(EditInitials.Mid(i, 1)));
+	}
+}
+
+void AGameFlowManager::SubmitLastRun()
+{
+	ULeaderboardSubsystem* Leaderboard = GetLeaderboard();
+	const UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
+	if (!Leaderboard || Save->Initials.IsEmpty())
+	{
+		return;
+	}
+	if (LastScore <= 0)
+	{
+		FetchLeaderboard(); // nothing worth posting; just show the table
+		return;
+	}
+	if (!Leaderboard->IsConfigured())
+	{
+		SetLeaderboardMessage(TEXT("Leaderboard\nnot set up"));
+		return;
+	}
+	bSubmitting = true;
+	SetLeaderboardMessage(TEXT("Loading..."));
+
+	const int32 RequestId = ++LeaderboardRequestId;
+	Leaderboard->SubmitScore(Save->Initials, LastScore, LastKills, LastDuration,
+		FOnLeaderboardResult::CreateWeakLambda(this, [this, RequestId](const FLeaderboardResult& Result)
+		{
+			bSubmitting = false;
+			bLastSubmitted = true;
+			bLastSubmitOnline = Result.bOnline;
+			LastRank = Result.Rank;
+			if (RequestId == LeaderboardRequestId)
+			{
+				ApplyLeaderboard(Result, /*bFromSubmit*/ true);
+			}
+			RefreshGameOverText();
+		}));
+	RefreshGameOverText();
+}
+
+void AGameFlowManager::FetchLeaderboard()
+{
+	ULeaderboardSubsystem* Leaderboard = GetLeaderboard();
+	if (!Leaderboard || !Leaderboard->IsConfigured())
+	{
+		SetLeaderboardMessage(TEXT("Leaderboard\nnot set up"));
+		return;
+	}
+	SetLeaderboardMessage(TEXT("Loading..."));
+	const int32 RequestId = ++LeaderboardRequestId;
+	Leaderboard->FetchTop(FOnLeaderboardResult::CreateWeakLambda(this, [this, RequestId](const FLeaderboardResult& Result)
+	{
+		if (RequestId == LeaderboardRequestId)
+		{
+			ApplyLeaderboard(Result, /*bFromSubmit*/ false);
+		}
+	}));
+}
+
+void AGameFlowManager::ApplyLeaderboard(const FLeaderboardResult& Result, bool bFromSubmit)
+{
+	if (!Result.bOnline)
+	{
+		SetLeaderboardMessage(TEXT("Leaderboard\noffline"));
+		return;
+	}
+	if (Result.Top.IsEmpty())
+	{
+		if (bFromSubmit)
+		{
+			FetchLeaderboard(); // submit was rejected, so it carried no table: ask for it
+		}
+		else
+		{
+			SetLeaderboardMessage(TEXT("No scores yet"));
+		}
+		return;
+	}
+
+	const FString& Me = UCyclopsSaveGame::LoadOrCreate()->Initials;
+	TArray<FString> Ranks, Names, Scores;
+	for (const FLeaderboardEntry& Entry : Result.Top)
+	{
+		Ranks.Add((Entry.Name == Me ? TEXT(">") : TEXT("")) + FString::FromInt(Entry.Rank));
+		Names.Add(Entry.Name);
+		Scores.Add(FString::FromInt(Entry.Score));
+	}
+	LeaderboardColumns[0]->SetText(FText::FromString(JoinLines(Ranks)));
+	LeaderboardColumns[1]->SetText(FText::FromString(JoinLines(Names)));
+	LeaderboardColumns[2]->SetText(FText::FromString(JoinLines(Scores)));
+	LeaderboardColumns[3]->SetText(FText::GetEmpty());
+}
+
+void AGameFlowManager::SetLeaderboardMessage(const FString& Message)
+{
+	for (int32 i = 0; i < 3; ++i)
+	{
+		LeaderboardColumns[i]->SetText(FText::GetEmpty());
+	}
+	LeaderboardColumns[3]->SetText(FText::FromString(Message));
+}
+
+void AGameFlowManager::SetLeaderboardVisible(bool bVisible)
+{
+	LeaderboardRoot->SetVisibility(bVisible, /*bPropagateToChildren*/ true);
+}
+
+void AGameFlowManager::SetInitialsVisible(bool bVisible)
+{
+	for (UTextRenderComponent* Letter : InitialLetters)
+	{
+		Letter->SetVisibility(bVisible);
+	}
+}
+
+ULeaderboardSubsystem* AGameFlowManager::GetLeaderboard() const
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	return GameInstance ? GameInstance->GetSubsystem<ULeaderboardSubsystem>() : nullptr;
+}
+
+// ---- Menu plumbing ----
+
 void AGameFlowManager::SetBeamsPaused(bool bPaused, bool bRefill) const
 {
 	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
@@ -379,7 +705,15 @@ void AGameFlowManager::SetBeamsPaused(bool bPaused, bool bRefill) const
 	}
 }
 
-void AGameFlowManager::ConfigureButton(int32 Index, EMenuButton Action, const FString& Text)
+void AGameFlowManager::ClearButtons()
+{
+	for (int32 i = 0; i < Slots.Num(); ++i)
+	{
+		ConfigureButton(i, EMenuButton::None, FString(), FVector2D::ZeroVector, ButtonSize);
+	}
+}
+
+void AGameFlowManager::ConfigureButton(int32 Index, EMenuButton Action, const FString& Text, const FVector2D& Position, const FVector2D& Size, float TextSize, int32 Param)
 {
 	if (!Slots.IsValidIndex(Index))
 	{
@@ -387,17 +721,32 @@ void AGameFlowManager::ConfigureButton(int32 Index, EMenuButton Action, const FS
 	}
 	FButtonSlot& Slot = Slots[Index];
 	Slot.Action = Action;
+	Slot.Param = Param;
+	Slot.Size = Size;
 	Slot.Charge = 0.f;
+	Slot.LastHitTime = -1.f;
+
+	const FVector Location(0.f, Position.X, Position.Y);
+	Slot.Panel->SetRelativeLocation(Location);
+	Slot.Panel->SetRelativeScale3D(FVector(ButtonDepth, Size.X / 100.f, Size.Y / 100.f));
+	Slot.Visual->SetRelativeLocation(Location + FVector(1.f, 0.f, 0.f));
+	SetPanelShape(Slot.Visual, Size, Size.Y * 0.5f, ButtonFill, ButtonRim, 0.f);
+	Slot.Label->SetRelativeLocation(Location + FVector(3.f, 0.f, 0.f));
+	Slot.Label->SetWorldSize(TextSize);
+	Slot.Label->SetText(FText::FromString(Text));
+
 	const bool bUsed = Action != EMenuButton::None;
 	Slot.Visual->SetVisibility(bUsed);
 	Slot.Label->SetVisibility(bUsed);
-	Slot.Label->SetText(FText::FromString(Text));
 	SetButtonCollision(Slot.Panel, false); // enabled in ShowMenu
 }
 
-void AGameFlowManager::ShowMenu(const FString& Title, const FString& Subtitle)
+void AGameFlowManager::ShowMenu(const FString& Title, const FString& Subtitle, bool bReposition)
 {
-	PlaceInFrontOfPlayer();
+	if (bReposition || !bMenuVisible)
+	{
+		PlaceInFrontOfPlayer();
+	}
 	TitleText->SetText(FText::FromString(Title));
 	SubtitleText->SetText(FText::FromString(Subtitle));
 	SetActorHiddenInGame(false);
@@ -467,12 +816,15 @@ float AGameFlowManager::TakeDamage(float DamageAmount, const FDamageEvent& Damag
 	Slot->LastHitTime = Now;
 	if (Slot->Charge >= ChargeRequired)
 	{
-		PressButton(Slot->Action);
+		// Copy: pressing reconfigures the slots.
+		const EMenuButton Action = Slot->Action;
+		const int32 Param = Slot->Param;
+		PressButton(Action, Param);
 	}
 	return DamageAmount;
 }
 
-void AGameFlowManager::PressButton(EMenuButton Action)
+void AGameFlowManager::PressButton(EMenuButton Action, int32 Param)
 {
 	for (FButtonSlot& Slot : Slots)
 	{
@@ -480,18 +832,55 @@ void AGameFlowManager::PressButton(EMenuButton Action)
 	}
 	PlayUISound(ConfirmSound);
 
+	const int32 CharsetLen = FCString::Strlen(InitialsCharset);
+	auto StepLetter = [this, Param, CharsetLen](int32 Step)
+	{
+		if (Param < 0 || Param >= EditInitials.Len())
+		{
+			return;
+		}
+		int32 Index = 0;
+		FString(InitialsCharset).FindChar(EditInitials[Param], Index);
+		Index = (Index + Step + CharsetLen) % CharsetLen;
+		EditInitials[Param] = InitialsCharset[Index];
+		RefreshInitialsLetters();
+	};
+
 	switch (Action)
 	{
 	case EMenuButton::Start:
 	case EMenuButton::Restart:
+	case EMenuButton::PlayAgain:
 		if (Spawner && State == EGameFlowState::Paused)
 		{
 			Spawner->SetGamePaused(false);
 		}
 		StartGame();
 		break;
-	case EMenuButton::Resume:   ResumeGame(); break;
-	case EMenuButton::MainMenu: ShowTitle(); break;
+	case EMenuButton::Resume:     ResumeGame(); break;
+	case EMenuButton::MainMenu:   ShowTitle(); break;
+	case EMenuButton::EditName:   ShowInitialsEditor(/*bReposition*/ false); break;
+	case EMenuButton::LetterUp:   StepLetter(1); break;   // hold the beam on it to keep stepping
+	case EMenuButton::LetterDown: StepLetter(-1); break;
+	case EMenuButton::NameDone:
+	{
+		UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
+		Save->Initials = EditInitials;
+		Save->Save();
+		if (State == EGameFlowState::GameOver)
+		{
+			if (!bLastSubmitted && !bSubmitting)
+			{
+				SubmitLastRun();
+			}
+			ShowGameOver(/*bReposition*/ false);
+		}
+		else
+		{
+			ShowTitle();
+		}
+		break;
+	}
 	default: break;
 	}
 }
@@ -510,6 +899,10 @@ void AGameFlowManager::Tick(float DeltaSeconds)
 	// Charge feedback: buttons glow and swell while the beam is on them, and drain when it leaves.
 	for (FButtonSlot& Slot : Slots)
 	{
+		if (Slot.Action == EMenuButton::None)
+		{
+			continue;
+		}
 		if (Now - Slot.LastHitTime > 0.1f)
 		{
 			Slot.Charge = FMath::Max(0.f, Slot.Charge - ChargeDecayPerSecond * DeltaSeconds);
@@ -517,8 +910,8 @@ void AGameFlowManager::Tick(float DeltaSeconds)
 		const float Fraction = FMath::Clamp(Slot.Charge / ChargeRequired, 0.f, 1.f);
 		const float Swell = 1.f + 0.12f * Fraction;
 		Slot.Visual->SetCustomPrimitiveDataFloat(3, Fraction); // Glow
-		Slot.Visual->SetRelativeScale3D(FVector(ButtonSize.Y * Swell / 100.f, ButtonSize.X * Swell / 100.f, 1.f));
-		Slot.Panel->SetRelativeScale3D(ButtonScale * Swell);
+		Slot.Visual->SetRelativeScale3D(FVector(Slot.Size.Y * Swell / 100.f, Slot.Size.X * Swell / 100.f, 1.f));
+		Slot.Panel->SetRelativeScale3D(FVector(ButtonDepth, Slot.Size.X * Swell / 100.f, Slot.Size.Y * Swell / 100.f));
 	}
 }
 

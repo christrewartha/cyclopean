@@ -30,3 +30,8 @@ Content/VRS_LowPolyNature/
 
 # Generated cook logs
 Build/*/FileOpenOrder/
+
+# Leaderboard: secrets + local data
+Server/leaderboard/.env
+Server/leaderboard/data/
+Source/Cyclops/Private/LeaderboardSecrets.h

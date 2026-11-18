@@ -270,6 +270,8 @@ float AFlyingEnemy::TakeDamage(float DamageAmount, const FDamageEvent& DamageEve
 	const float Applied = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
 	Health -= Applied;
 	SetFlash(1.f);
+	const bool bFirstHit = !bHasBeenHit;
+	bHasBeenHit = true;
 
 	if (Health <= 0.f)
 	{
@@ -278,7 +280,7 @@ float AFlyingEnemy::TakeDamage(float DamageAmount, const FDamageEvent& DamageEve
 		{
 			ShotDirection = static_cast<const FPointDamageEvent&>(DamageEvent).ShotDirection;
 		}
-		Die(ShotDirection);
+		Die(ShotDirection, bFirstHit);
 	}
 	return Applied;
 }
@@ -296,7 +298,7 @@ void AFlyingEnemy::MakePhysicsPiece(UStaticMeshComponent* Piece, const FVector& 
 	Piece->AddAngularImpulseInDegrees(FMath::VRand() * 720.f, NAME_None, /*bVelChange*/ true);
 }
 
-void AFlyingEnemy::Die(const FVector& ShotDirection)
+void AFlyingEnemy::Die(const FVector& ShotDirection, bool bOneShot)
 {
 	State = EFlyingEnemyState::Dead;
 	SetFlash(1.f);
@@ -320,7 +322,7 @@ void AFlyingEnemy::Die(const FVector& ShotDirection)
 
 	if (AEnemySpawner* OwningSpawner = Spawner.Get())
 	{
-		OwningSpawner->NotifyEnemyKilled(this);
+		OwningSpawner->NotifyEnemyKilled(this, bOneShot);
 	}
 }
 

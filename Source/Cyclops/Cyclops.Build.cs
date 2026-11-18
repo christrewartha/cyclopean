@@ -21,6 +21,9 @@ public class Cyclops : ModuleRules
 			"RHI",
 			"RenderCore",
 			"HeadMountedDisplay",
+			// Leaderboard client.
+			"HTTP",
+			"Json",
 		});
 	}
 }

@@ -138,7 +138,7 @@ protected:
 private:
 	void TickFlight(float DeltaSeconds, const FVector& HeadLocation);
 	void TickLook(float DeltaSeconds);
-	void Die(const FVector& ShotDirection);
+	void Die(const FVector& ShotDirection, bool bOneShot);
 	void ReachPlayer();
 	bool GetHeadLocation(FVector& OutLocation) const;
 	void SetFlash(float Value);
@@ -182,6 +182,7 @@ private:
 	bool bFrozen = false;
 	float StateTime = 0.f;
 	float Health = 0.f;
+	bool bHasBeenHit = false;   // dying on the very first damage tick (the burst) counts as a one-shot
 	float Flash = 0.f;
 	float WeavePhaseH = 0.f;
 	float WeavePhaseV = 0.f;
