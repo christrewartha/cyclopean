@@ -5,7 +5,7 @@
 #include "Components/SceneComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "Engine/World.h"
-#include "FlyingEnemy.h"
+#include "CyclopsEnemy.h"
 #include "GameFramework/PlayerController.h"
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
@@ -105,6 +105,7 @@ void AEnemySpawner::StartSpawning()
 	bRunActive = true;
 	RunStartTime = GetWorld()->GetTimeSeconds();
 	TotalPausedTime = 0.0;
+	OnRunStarted();
 	SpawnTick();
 }
 
@@ -116,14 +117,7 @@ void AEnemySpawner::StopSpawning()
 void AEnemySpawner::ResetSpawner()
 {
 	StopSpawning();
-	for (const TWeakObjectPtr<AFlyingEnemy>& Enemy : AliveEnemies)
-	{
-		if (Enemy.IsValid())
-		{
-			Enemy->Destroy();
-		}
-	}
-	AliveEnemies.Reset();
+	DestroyAliveEnemies();
 	Kills = 0;
 	HitsTaken = 0;
 	Score = 0;
@@ -131,7 +125,32 @@ void AEnemySpawner::ResetSpawner()
 	Lives = MaxLives;
 	bRunActive = false;
 	bGamePaused = false;
+	OnRunStopped();
 	UpdateScoreboard();
+}
+
+void AEnemySpawner::DestroyAliveEnemies()
+{
+	for (const TWeakObjectPtr<AActor>& Enemy : AliveEnemies)
+	{
+		if (Enemy.IsValid())
+		{
+			Enemy->Destroy();
+		}
+	}
+	AliveEnemies.Reset();
+}
+
+bool AEnemySpawner::GetPlayerHead(FVector& OutLocation) const
+{
+	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
+	const APlayerCameraManager* Camera = PC ? PC->PlayerCameraManager.Get() : nullptr;
+	if (!Camera)
+	{
+		return false;
+	}
+	OutLocation = Camera->GetCameraLocation();
+	return true;
 }
 
 void AEnemySpawner::SetGamePaused(bool bPaused)
@@ -155,13 +174,14 @@ void AEnemySpawner::SetGamePaused(bool bPaused)
 		TotalPausedTime += Now - PausedSince;
 	}
 
-	for (const TWeakObjectPtr<AFlyingEnemy>& Enemy : AliveEnemies)
+	for (const TWeakObjectPtr<AActor>& Enemy : AliveEnemies)
 	{
-		if (Enemy.IsValid())
+		if (ICyclopsEnemy* AsEnemy = Cast<ICyclopsEnemy>(Enemy.Get()))
 		{
-			Enemy->SetFrozen(bPaused);
+			AsEnemy->SetFrozen(bPaused);
 		}
 	}
+	OnPausedChanged(bPaused);
 }
 
 int32 AEnemySpawner::GetCurrentMaxAlive() const
@@ -179,16 +199,26 @@ void AEnemySpawner::ScheduleNextSpawn()
 	GetWorldTimerManager().SetTimer(SpawnTimer, this, &AEnemySpawner::SpawnTick, CurrentInterval, false);
 }
 
-bool AEnemySpawner::PickSpawnLocation(FVector& OutLocation) const
+int32 AEnemySpawner::CountAliveOfClass(const UClass* Class) const
 {
-	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
-	const APlayerCameraManager* Camera = PC ? PC->PlayerCameraManager.Get() : nullptr;
-	if (!Camera)
+	int32 Count = 0;
+	for (const TWeakObjectPtr<AActor>& Enemy : AliveEnemies)
+	{
+		const ICyclopsEnemy* AsEnemy = Cast<ICyclopsEnemy>(Enemy.Get());
+		Count += AsEnemy && !AsEnemy->IsDead() && Class && Enemy->IsA(Class) ? 1 : 0;
+	}
+	return Count;
+}
+
+bool AEnemySpawner::PickSpawnLocation(TSubclassOf<AActor> Class, FVector& OutLocation, FRotator& OutRotation)
+{
+	FVector Head;
+	if (!GetPlayerHead(Head))
 	{
 		return false;
 	}
+	OutRotation = FRotator::ZeroRotator;
 
-	const FVector Head = Camera->GetCameraLocation();
 	const float Yaw = GetActorRotation().Yaw + FMath::FRandRange(-SpawnYawHalfRange, SpawnYawHalfRange);
 	const float Distance = FMath::FRandRange(SpawnDistanceMin, SpawnDistanceMax);
 	const FVector Offset = FRotator(0.f, Yaw, 0.f).Vector() * Distance;
@@ -199,21 +229,25 @@ bool AEnemySpawner::PickSpawnLocation(FVector& OutLocation) const
 
 void AEnemySpawner::SpawnTick()
 {
-	AliveEnemies.RemoveAll([](const TWeakObjectPtr<AFlyingEnemy>& Enemy)
+	AliveEnemies.RemoveAll([](const TWeakObjectPtr<AActor>& Enemy)
 	{
-		return !Enemy.IsValid() || Enemy->GetState() == EFlyingEnemyState::Dead;
+		const ICyclopsEnemy* AsEnemy = Cast<ICyclopsEnemy>(Enemy.Get());
+		return !AsEnemy || AsEnemy->IsDead();
 	});
 
 	FVector Location;
-	if (AliveEnemies.Num() < GetCurrentMaxAlive() && PickSpawnLocation(Location))
+	FRotator Rotation;
+	const TSubclassOf<AActor> Class = AliveEnemies.Num() < GetCurrentMaxAlive() ? PickEnemyClass() : nullptr;
+	if (Class && PickSpawnLocation(Class, Location, Rotation))
 	{
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		Params.Owner = this;
 
-		if (AFlyingEnemy* Enemy = GetWorld()->SpawnActor<AFlyingEnemy>(EnemyClass, Location, FRotator::ZeroRotator, Params))
+		AActor* Enemy = GetWorld()->SpawnActor<AActor>(Class, Location, Rotation, Params);
+		if (ICyclopsEnemy* AsEnemy = Cast<ICyclopsEnemy>(Enemy))
 		{
-			Enemy->InitEnemy(this, GetCurrentEnemySpeed());
+			AsEnemy->InitEnemy(this, GetSpawnSpeed(Class));
 			AliveEnemies.Add(Enemy);
 			CurrentInterval = FMath::Max(MinSpawnInterval, CurrentInterval * IntervalMultiplier);
 		}
@@ -228,7 +262,7 @@ int32 AEnemySpawner::GetMultiplier() const
 	return Streak >= 20 ? 4 : (Streak >= 10 ? 3 : (Streak >= 5 ? 2 : 1));
 }
 
-void AEnemySpawner::NotifyEnemyKilled(AFlyingEnemy* Enemy, bool bOneShot)
+void AEnemySpawner::NotifyEnemyKilled(AActor* Enemy, bool bOneShot, bool bHeadshot)
 {
 	if (!bRunActive)
 	{
@@ -236,11 +270,11 @@ void AEnemySpawner::NotifyEnemyKilled(AFlyingEnemy* Enemy, bool bOneShot)
 	}
 	++Kills;
 	++Streak;
-	Score += (PointsPerKill + (bOneShot ? OneShotBonus : 0)) * GetMultiplier();
+	Score += (PointsPerKill + (bOneShot ? OneShotBonus : 0) + (bHeadshot ? HeadshotBonus : 0)) * GetMultiplier();
 	UpdateScoreboard();
 }
 
-void AEnemySpawner::NotifyEnemyReachedPlayer(AFlyingEnemy* Enemy)
+void AEnemySpawner::NotifyEnemyReachedPlayer(AActor* Enemy)
 {
 	if (!bRunActive)
 	{
@@ -276,25 +310,32 @@ float AEnemySpawner::GetRunDuration() const
 	return float(FMath::Max(0.0, Now - RunStartTime - Paused));
 }
 
-void AEnemySpawner::EndRun()
+void AEnemySpawner::EndRun(bool bCompleted, int32 FinishBonus)
 {
 	FRunResult Result;
 	Result.Score = Score;
 	Result.Kills = Kills;
 	Result.Duration = GetRunDuration();
+	Result.bCompleted = bCompleted;
+	Result.FinishBonus = FinishBonus;
 
 	bRunActive = false;
 	StopSpawning();
-	for (const TWeakObjectPtr<AFlyingEnemy>& Enemy : AliveEnemies)
-	{
-		if (Enemy.IsValid())
-		{
-			Enemy->Destroy();
-		}
-	}
-	AliveEnemies.Reset();
+	DestroyAliveEnemies();
+	OnRunStopped();
 
 	OnRunEnded.Broadcast(Result);
+}
+
+void AEnemySpawner::CompleteRun(int32 FinishBonus)
+{
+	if (!bRunActive)
+	{
+		return;
+	}
+	Score += FinishBonus;
+	UpdateScoreboard();
+	EndRun(/*bCompleted*/ true, FinishBonus);
 }
 
 void AEnemySpawner::StopHaptics()

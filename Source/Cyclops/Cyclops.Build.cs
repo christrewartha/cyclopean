@@ -24,6 +24,9 @@ public class Cyclops : ModuleRules
 			// Leaderboard client.
 			"HTTP",
 			"Json",
+			// Walking enemies (AAIController pathfinding on the navmesh).
+			"AIModule",
+			"NavigationSystem",
 		});
 	}
 }

@@ -2,6 +2,7 @@
 
 #include "CyclopsSaveGame.h"
 #include "Dom/JsonObject.h"
+#include "GenericPlatform/GenericPlatformHttp.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpResponse.h"
 #include "LeaderboardConfig.h"
@@ -72,7 +73,7 @@ bool ULeaderboardSubsystem::ParseTop(const TSharedPtr<FJsonObject>& Json, TArray
 	return true;
 }
 
-void ULeaderboardSubsystem::FetchTop(FOnLeaderboardResult OnDone)
+void ULeaderboardSubsystem::FetchTop(const FString& Mode, FOnLeaderboardResult OnDone)
 {
 	if (!IsConfigured())
 	{
@@ -83,7 +84,7 @@ void ULeaderboardSubsystem::FetchTop(FOnLeaderboardResult OnDone)
 	SendPendingScores();
 
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
-	Request->SetURL(FString(CYCLOPS_LEADERBOARD_URL) + ScoresPath + TEXT("?limit=10"));
+	Request->SetURL(FString(CYCLOPS_LEADERBOARD_URL) + ScoresPath + TEXT("?limit=10&mode=") + FGenericPlatformHttp::UrlEncode(Mode));
 	Request->SetVerb(TEXT("GET"));
 	Request->SetTimeout(RequestTimeout);
 	Request->OnProcessRequestComplete().BindWeakLambda(this, [OnDone](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnected)
@@ -99,7 +100,7 @@ void ULeaderboardSubsystem::FetchTop(FOnLeaderboardResult OnDone)
 	Request->ProcessRequest();
 }
 
-void ULeaderboardSubsystem::SubmitScore(const FString& Name, int32 Score, int32 Kills, float Duration, FOnLeaderboardResult OnDone)
+void ULeaderboardSubsystem::SubmitScore(const FString& Mode, const FString& Name, int32 Score, int32 Kills, float Duration, FOnLeaderboardResult OnDone)
 {
 	if (!IsConfigured())
 	{
@@ -107,7 +108,7 @@ void ULeaderboardSubsystem::SubmitScore(const FString& Name, int32 Score, int32 
 		return;
 	}
 
-	PostScore(Name, Score, Kills, Duration, [this, Name, Score, Kills, Duration, OnDone](bool bAccepted, const FLeaderboardResult& Result)
+	PostScore(Mode, Name, Score, Kills, Duration, [this, Mode, Name, Score, Kills, Duration, OnDone](bool bAccepted, const FLeaderboardResult& Result)
 	{
 		if (!Result.bOnline)
 		{
@@ -115,7 +116,7 @@ void ULeaderboardSubsystem::SubmitScore(const FString& Name, int32 Score, int32 
 			UCyclopsSaveGame* SaveGame = UCyclopsSaveGame::LoadOrCreate();
 			if (SaveGame->PendingScores.Num() < MaxPendingScores)
 			{
-				SaveGame->PendingScores.Add({ Name, Score, Kills, Duration });
+				SaveGame->PendingScores.Add({ Name, Score, Kills, Duration, Mode });
 				SaveGame->Save();
 			}
 		}
@@ -141,7 +142,8 @@ void ULeaderboardSubsystem::SendPendingScores()
 
 	bFlushingPending = true;
 	const FPendingScore Next = SaveGame->PendingScores[0];
-	PostScore(Next.Name, Next.Score, Next.Kills, Next.Duration, [this](bool bAccepted, const FLeaderboardResult& Result)
+	const FString NextMode = Next.Mode.IsEmpty() ? FString(TEXT("arena")) : Next.Mode;
+	PostScore(NextMode, Next.Name, Next.Score, Next.Kills, Next.Duration, [this](bool bAccepted, const FLeaderboardResult& Result)
 	{
 		bFlushingPending = false;
 		if (!Result.bOnline)
@@ -159,7 +161,7 @@ void ULeaderboardSubsystem::SendPendingScores()
 	});
 }
 
-void ULeaderboardSubsystem::PostScore(const FString& Name, int32 Score, int32 Kills, float Duration,
+void ULeaderboardSubsystem::PostScore(const FString& Mode, const FString& Name, int32 Score, int32 Kills, float Duration,
 	TFunction<void(bool bAccepted, const FLeaderboardResult&)> OnDone)
 {
 	TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
@@ -168,6 +170,7 @@ void ULeaderboardSubsystem::PostScore(const FString& Name, int32 Score, int32 Ki
 	Json->SetNumberField(TEXT("kills"), Kills);
 	Json->SetNumberField(TEXT("duration"), FMath::Max(Duration, 0.1f));
 	Json->SetStringField(TEXT("version"), GameVersion());
+	Json->SetStringField(TEXT("mode"), Mode);
 
 	FString Body;
 	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Body);

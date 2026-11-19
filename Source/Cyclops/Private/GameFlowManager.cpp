@@ -53,6 +53,16 @@ namespace
 	const FVector2D LeaderboardSize(95.f, 122.f);
 	const float LeaderboardRowSize = 7.f;
 
+	// Menu placement around walls (PlaceInFrontOfPlayer).
+	const float MenuCandidateYaws[] = { 0.f, -30.f, 30.f, -60.f, 60.f, -90.f, 90.f, -135.f, 135.f, 180.f };
+	const FVector MenuFootprintHalfExtent(15.f, 180.f, 70.f); // main panel + the angled leaderboard panel, with margin
+	constexpr float MenuClearance = 40.f;  // free space wanted beyond the menu
+	constexpr float MenuSightRadius = 15.f;
+	constexpr float MinMenuDistance = 120.f;
+
+	/** URL option set when arriving via the title's level switch: skip the title and start. */
+	const TCHAR* StartOption = TEXT("start");
+
 	// Title graphic: bat floats above the panel, zapped by a beam from the upper left.
 	const FVector GraphicBatLocation(6.f, -28.f, 112.f);
 	const FVector GraphicBeamStart(6.f, 100.f, 84.f);
@@ -186,7 +196,7 @@ AGameFlowManager::AGameFlowManager()
 	LeaderboardPanel = MakeVisual(this, TEXT("LeaderboardPanel"), LeaderboardRoot, FVector::ZeroVector);
 	LeaderboardPanel->SetRelativeRotation(PlaneFacingPlayer);
 
-	LeaderboardTitle = MakeText(this, TEXT("LeaderboardTitle"), LeaderboardRoot, FVector(3.f, 0.f, 49.f), 10.f, FColor(255, 90, 60));
+	LeaderboardTitle = MakeText(this, TEXT("LeaderboardTitle"), LeaderboardRoot, FVector(3.f, 0.f, 49.f), 8.f, FColor(255, 90, 60));
 	LeaderboardTitle->SetText(FText::FromString(TEXT("TOP 10")));
 
 	// Columns: rank and name left-aligned (text runs towards -Y), score right-aligned at the far edge.
@@ -348,12 +358,15 @@ void AGameFlowManager::BeginPlay()
 		Spawner->OnRunEnded.AddUObject(this, &AGameFlowManager::HandleRunEnded);
 	}
 
+	LeaderboardTitle->SetText(FText::FromString(GetModeName() + TEXT(" TOP 10")));
 	SetInitialsVisible(false);
 	SetLeaderboardVisible(false);
 	HideMenu();
 	// Give the HMD a moment to report a real pose so the title appears in front of the player.
+	// Arriving from the other level's title (level switch): go straight into a run.
 	FTimerHandle Handle;
-	GetWorldTimerManager().SetTimer(Handle, this, &AGameFlowManager::ShowTitle, 0.5f, false);
+	const bool bStartImmediately = GetWorld()->URL.HasOption(StartOption);
+	GetWorldTimerManager().SetTimer(Handle, this, bStartImmediately ? &AGameFlowManager::StartGame : &AGameFlowManager::ShowTitle, 0.5f, false);
 }
 
 void AGameFlowManager::HandlePauseInput(const FInputActionValue& Value)
@@ -387,10 +400,15 @@ void AGameFlowManager::ShowTitle()
 	ConfigureButton(0, EMenuButton::Start, TEXT("START"), RowCentre, ButtonSize);
 	ConfigureButton(1, EMenuButton::EditName, Save->Initials.IsEmpty() ? FString(TEXT("SET NAME")) : TEXT("NAME ") + Save->Initials, RowRight, ButtonSize);
 
-	FString Subtitle = TEXT("Blast START to begin      Menu button pauses");
-	if (Save->BestScore > 0)
+	if (!OtherLevel.IsNull() && !OtherLevelLabel.IsEmpty())
 	{
-		Subtitle += FString::Printf(TEXT("\nYour best: %d"), Save->BestScore);
+		ConfigureButton(2, EMenuButton::SwitchLevel, OtherLevelLabel, RowLeft, ButtonSize);
+	}
+
+	FString Subtitle = GetModeName() + TEXT("      Blast START to begin      Menu button pauses");
+	if (const int32 Best = Save->GetBest(GetMode()); Best > 0)
+	{
+		Subtitle += FString::Printf(TEXT("\nYour best: %d"), Best);
 	}
 	SetInitialsVisible(false);
 	SetLeaderboardVisible(true);
@@ -467,12 +485,14 @@ void AGameFlowManager::HandleRunEnded(const FRunResult& Result)
 	LastRank = 0;
 	bLastSubmitted = false;
 	bSubmitting = false;
+	bLastCompleted = Result.bCompleted;
+	LastFinishBonus = Result.FinishBonus;
 
 	UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
-	bLastWasBest = LastScore > Save->BestScore;
+	bLastWasBest = LastScore > Save->GetBest(GetMode());
 	if (bLastWasBest)
 	{
-		Save->BestScore = LastScore;
+		Save->SetBest(GetMode(), LastScore);
 		Save->Save();
 	}
 
@@ -504,7 +524,7 @@ void AGameFlowManager::ShowGameOver(bool bReposition)
 
 	SetInitialsVisible(false);
 	SetLeaderboardVisible(true);
-	ShowMenu(TEXT("GAME OVER"), FString(), bReposition);
+	ShowMenu(bLastCompleted ? TEXT("ESCAPED!") : TEXT("GAME OVER"), FString(), bReposition);
 	RefreshGameOverText();
 }
 
@@ -517,7 +537,11 @@ void AGameFlowManager::RefreshGameOverText()
 	const UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
 	FString Text = bLastWasBest
 		? FString::Printf(TEXT("NEW BEST!    Score %d"), LastScore)
-		: FString::Printf(TEXT("Score %d      Best %d"), LastScore, Save->BestScore);
+		: FString::Printf(TEXT("Score %d      Best %d"), LastScore, Save->GetBest(GetMode()));
+	if (bLastCompleted)
+	{
+		Text += FString::Printf(TEXT("    (exit bonus %d)"), LastFinishBonus);
+	}
 
 	const ULeaderboardSubsystem* Leaderboard = GetLeaderboard();
 	if (Leaderboard && Leaderboard->IsConfigured())
@@ -591,7 +615,7 @@ void AGameFlowManager::SubmitLastRun()
 	SetLeaderboardMessage(TEXT("Loading..."));
 
 	const int32 RequestId = ++LeaderboardRequestId;
-	Leaderboard->SubmitScore(Save->Initials, LastScore, LastKills, LastDuration,
+	Leaderboard->SubmitScore(GetMode(), Save->Initials, LastScore, LastKills, LastDuration,
 		FOnLeaderboardResult::CreateWeakLambda(this, [this, RequestId](const FLeaderboardResult& Result)
 		{
 			bSubmitting = false;
@@ -617,7 +641,7 @@ void AGameFlowManager::FetchLeaderboard()
 	}
 	SetLeaderboardMessage(TEXT("Loading..."));
 	const int32 RequestId = ++LeaderboardRequestId;
-	Leaderboard->FetchTop(FOnLeaderboardResult::CreateWeakLambda(this, [this, RequestId](const FLeaderboardResult& Result)
+	Leaderboard->FetchTop(GetMode(), FOnLeaderboardResult::CreateWeakLambda(this, [this, RequestId](const FLeaderboardResult& Result)
 	{
 		if (RequestId == LeaderboardRequestId)
 		{
@@ -680,6 +704,16 @@ void AGameFlowManager::SetInitialsVisible(bool bVisible)
 	{
 		Letter->SetVisibility(bVisible);
 	}
+}
+
+FString AGameFlowManager::GetMode() const
+{
+	return Spawner && !Spawner->LeaderboardMode.IsEmpty() ? Spawner->LeaderboardMode : FString(TEXT("arena"));
+}
+
+FString AGameFlowManager::GetModeName() const
+{
+	return Spawner && !Spawner->ModeName.IsEmpty() ? Spawner->ModeName : FString(TEXT("ARENA"));
 }
 
 ULeaderboardSubsystem* AGameFlowManager::GetLeaderboard() const
@@ -784,11 +818,47 @@ void AGameFlowManager::PlaceInFrontOfPlayer()
 	{
 		return;
 	}
-	const FVector Eye = Camera->GetCameraLocation();
-	const float Yaw = Camera->GetCameraRotation().Yaw;
-	FVector Location = Eye + FRotator(0.f, Yaw, 0.f).Vector() * MenuDistance;
-	Location.Z = Eye.Z + MenuHeightOffset;
-	SetActorLocationAndRotation(Location, FRotator(0.f, Yaw + 180.f, 0.f));
+	const FVector Centre = Camera->GetCameraLocation() + FVector(0.0, 0.0, MenuHeightOffset);
+	const float ViewYaw = Camera->GetCameraRotation().Yaw;
+
+	// In the open arena straight ahead is always free, but in the streets the player may be facing a wall: a menu
+	// placed inside a building can't be pressed. Try straight ahead, then fan out, and take the first direction with
+	// a clear line to the menu (the beam has to reach it) and room for the whole menu; failing that the most open one.
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(MenuPlacement), false, this);
+	Params.AddIgnoredActor(PC->GetPawn());
+	const FCollisionObjectQueryParams Statics(ECC_WorldStatic);
+	const float Reach = MenuDistance + MenuClearance;
+
+	float BestYaw = ViewYaw;
+	float BestClear = -1.f;
+	bool bFoundRoom = false;
+	for (const float Offset : MenuCandidateYaws)
+	{
+		const float Yaw = ViewYaw + Offset;
+		const FVector Direction = FRotator(0.f, Yaw, 0.f).Vector();
+		float Clear = Reach;
+		FHitResult Hit;
+		if (GetWorld()->SweepSingleByObjectType(Hit, Centre, Centre + Direction * Reach, FQuat::Identity, Statics,
+			FCollisionShape::MakeSphere(MenuSightRadius), Params))
+		{
+			Clear = Hit.Distance;
+		}
+		if (Clear >= Reach && !GetWorld()->OverlapAnyTestByObjectType(Centre + Direction * MenuDistance,
+			FRotator(0.f, Yaw, 0.f).Quaternion(), Statics, FCollisionShape::MakeBox(MenuFootprintHalfExtent), Params))
+		{
+			BestYaw = Yaw;
+			bFoundRoom = true;
+			break;
+		}
+		if (Clear > BestClear)
+		{
+			BestClear = Clear;
+			BestYaw = Yaw;
+		}
+	}
+
+	const float Distance = bFoundRoom ? MenuDistance : FMath::Clamp(BestClear - MenuClearance, MinMenuDistance, MenuDistance);
+	SetActorLocationAndRotation(Centre + FRotator(0.f, BestYaw, 0.f).Vector() * Distance, FRotator(0.f, BestYaw + 180.f, 0.f));
 }
 
 AGameFlowManager::FButtonSlot* AGameFlowManager::FindSlot(const UPrimitiveComponent* Component)
@@ -860,6 +930,10 @@ void AGameFlowManager::PressButton(EMenuButton Action, int32 Param)
 	case EMenuButton::Resume:     ResumeGame(); break;
 	case EMenuButton::MainMenu:   ShowTitle(); break;
 	case EMenuButton::EditName:   ShowInitialsEditor(/*bReposition*/ false); break;
+	case EMenuButton::SwitchLevel:
+		HideMenu();
+		UGameplayStatics::OpenLevelBySoftObjectPtr(this, OtherLevel, /*bAbsolute*/ true, StartOption);
+		break;
 	case EMenuButton::LetterUp:   StepLetter(1); break;   // hold the beam on it to keep stepping
 	case EMenuButton::LetterDown: StepLetter(-1); break;
 	case EMenuButton::NameDone:

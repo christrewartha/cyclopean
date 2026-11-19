@@ -38,15 +38,15 @@ class CYCLOPS_API ULeaderboardSubsystem : public UGameInstanceSubsystem
 public:
 	bool IsConfigured() const;
 
-	/** Top 10 (one entry per player, their best). */
-	void FetchTop(FOnLeaderboardResult OnDone);
+	/** Top 10 for a level (one entry per player, their best). */
+	void FetchTop(const FString& Mode, FOnLeaderboardResult OnDone);
 
-	/** Submits a finished run (queues it if offline), then reports the updated top 10. */
-	void SubmitScore(const FString& Name, int32 Score, int32 Kills, float Duration, FOnLeaderboardResult OnDone);
+	/** Submits a finished run on a level's board (queues it if offline), then reports that board's top 10. */
+	void SubmitScore(const FString& Mode, const FString& Name, int32 Score, int32 Kills, float Duration, FOnLeaderboardResult OnDone);
 
 private:
 	void SendPendingScores();
-	void PostScore(const FString& Name, int32 Score, int32 Kills, float Duration, TFunction<void(bool bAccepted, const FLeaderboardResult&)> OnDone);
+	void PostScore(const FString& Mode, const FString& Name, int32 Score, int32 Kills, float Duration, TFunction<void(bool bAccepted, const FLeaderboardResult&)> OnDone);
 	static bool ParseTop(const TSharedPtr<class FJsonObject>& Json, TArray<FLeaderboardEntry>& OutTop);
 	static FString Sign(const FString& Body);
 

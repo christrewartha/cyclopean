@@ -14,6 +14,7 @@ struct FPendingScore
 	UPROPERTY() int32 Score = 0;
 	UPROPERTY() int32 Kills = 0;
 	UPROPERTY() float Duration = 0.f;
+	UPROPERTY() FString Mode;   // empty = arena (saves from before levels existed)
 };
 
 /** Per-headset progress: personal best, arcade initials and unsent scores. */
@@ -29,7 +30,14 @@ public:
 	static UCyclopsSaveGame* LoadOrCreate();
 	void Save();
 
+	/** Personal best for a level (leaderboard mode). */
+	int32 GetBest(const FString& Mode) const;
+	void SetBest(const FString& Mode, int32 Score);
+
+	/** Arena best from saves before per-level bests; read through GetBest("arena"). */
 	UPROPERTY() int32 BestScore = 0;
+
+	UPROPERTY() TMap<FString, int32> BestScores;
 
 	/** 3 characters A-Z / 0-9; empty until the player first enters them. */
 	UPROPERTY() FString Initials;

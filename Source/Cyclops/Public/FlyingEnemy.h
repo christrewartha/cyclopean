@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CyclopsEnemy.h"
 #include "GameFramework/Actor.h"
 #include "FlyingEnemy.generated.h"
 
@@ -31,21 +32,21 @@ enum class EFlyingEnemyState : uint8
  * become simulating physics bodies and get knocked along the shot direction.
  */
 UCLASS()
-class CYCLOPS_API AFlyingEnemy : public AActor
+class CYCLOPS_API AFlyingEnemy : public AActor, public ICyclopsEnemy
 {
 	GENERATED_BODY()
 
 public:
 	AFlyingEnemy();
 
-	/** Called by the spawner right after spawning. */
-	void InitEnemy(AEnemySpawner* InSpawner, float InSpeed);
+	// ICyclopsEnemy
+	virtual void InitEnemy(AEnemySpawner* InSpawner, float InSpeed) override;
+	virtual void SetFrozen(bool bInFrozen) override;
+	virtual bool IsDead() const override { return State == EFlyingEnemyState::Dead; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy")
 	EFlyingEnemyState GetState() const { return State; }
 
-	/** Freeze in place (game paused): no movement, no damage, sounds paused. */
-	void SetFrozen(bool bInFrozen);
 
 	virtual float TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent, AController* EventInstigator, AActor* DamageCauser) override;
 

@@ -37,6 +37,7 @@ enum class EMenuButton : uint8
 	LetterUp,     // Param = letter index
 	LetterDown,
 	NameDone,
+	SwitchLevel,  // travel to OtherLevel and start straight away
 };
 
 /**
@@ -75,6 +76,14 @@ public:
 	/** The spawner in this level that this manager drives. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Flow")
 	TObjectPtr<AEnemySpawner> Spawner;
+
+	/** The level offered on the title screen's switch button (e.g. Streets from the Arena). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Flow|Levels")
+	TSoftObjectPtr<UWorld> OtherLevel;
+
+	/** Label for that button. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Flow|Levels")
+	FString OtherLevelLabel;
 
 	/** Pause / resume (and start, from the title). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Flow|Input")
@@ -180,6 +189,9 @@ private:
 	void SetLeaderboardVisible(bool bVisible);
 	void SetInitialsVisible(bool bVisible);
 	class ULeaderboardSubsystem* GetLeaderboard() const;
+	/** Leaderboard / best-score key and display name of this level (from the spawner). */
+	FString GetMode() const;
+	FString GetModeName() const;
 	void PlayUISound(USoundBase* Sound) const;
 	/** Applies pause state to every optic blast in the world (energy frozen while paused). */
 	void SetBeamsPaused(bool bPaused, bool bRefill) const;
@@ -265,6 +277,8 @@ private:
 	float LastDuration = 0.f;
 	int32 LastRank = 0;
 	bool bLastWasBest = false;
+	bool bLastCompleted = false;
+	int32 LastFinishBonus = 0;
 	bool bLastSubmitted = false;
 	bool bSubmitting = false;
 	bool bLastSubmitOnline = false;
