@@ -59,6 +59,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Spawner")
 	void SetScoreboardVisible(bool bVisible);
 
+	/**
+	 * Replaces the score / lives text with other content (versus: score left, health + time right) until called with
+	 * bOverride = false. bWarn turns the right-hand text red.
+	 */
+	void SetHudOverride(bool bOverride, const FString& Left = FString(), const FString& Right = FString(), bool bWarn = false);
+
 	/** bOneShot: killed by a single hit (the opening burst) - earns the accuracy bonus. bHeadshot: the killing hit was a headshot. */
 	void NotifyEnemyKilled(AActor* Enemy, bool bOneShot, bool bHeadshot = false);
 	void NotifyEnemyReachedPlayer(AActor* Enemy);
@@ -101,6 +107,19 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawner|Level")
 	bool bAllowGun = false;
+
+	/** Whether the title offers VERSUS (two players online, see AVersusMatch). Needs BeginFreeRoam support. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawner|Level")
+	bool bAllowVersus = false;
+
+	/**
+	 * Versus: no run and no enemies, just let the player move, starting at the position for their slot (0 = first to
+	 * join). Paused / resumed with SetGamePaused like a run.
+	 */
+	virtual void BeginFreeRoam(int32 Slot) {}
+	virtual void EndFreeRoam() {}
+	/** Versus: move the player to a start position away from AvoidLocation (the opponent) after dying. */
+	virtual void RespawnFreeRoam(int32 Slot, const FVector& AvoidLocation) {}
 
 	// ---- Rules ----
 
@@ -254,6 +273,9 @@ private:
 
 	bool bHudAttached = false;
 	bool bHudVisible = true;
+	bool bHudOverride = false;
+	FString HudLeft;   // last override texts (only re-set the text renders when they change)
+	FString HudRight;
 
 	TArray<TWeakObjectPtr<AActor>> AliveEnemies;
 	FTimerHandle SpawnTimer;

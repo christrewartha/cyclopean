@@ -10,6 +10,8 @@
 #include "Engine/World.h"
 #include "EnemySpawner.h"
 #include "HandGun.h"
+#include "MatchSubsystem.h"
+#include "VersusMatch.h"
 #include "EngineUtils.h"
 #include "OpticBlastComponent.h"
 #include "EnhancedInputComponent.h"
@@ -417,6 +419,10 @@ void AGameFlowManager::ApplyWeapon(bool bUseGun)
 			FActorSpawnParameters Params;
 			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 			Gun = GetWorld()->SpawnActor<AHandGun>(GunClass, GetActorTransform(), Params); // attaches itself to the view
+			if (Gun)
+			{
+				Gun->SetFreeFire(bMenuVisible); // spawned with a menu already open
+			}
 		};
 		// Actors spawned during the level's initial BeginPlay pass can miss their own BeginPlay: wait a tick.
 		if (GetWorld()->HasBegunPlay())
@@ -436,6 +442,198 @@ void AGameFlowManager::ApplyWeapon(bool bUseGun)
 	LeaderboardTitle->SetText(FText::FromString(GetModeName() + TEXT(" TOP 10")));
 }
 
+// ---- Versus ----
+
+void AGameFlowManager::ShowRoomEditor()
+{
+	// Same three letters as the initials editor, but they spell the room both players join.
+	ShowInitialsEditor(/*bReposition*/ false);
+	bEditingRoom = true;
+	const UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
+	EditInitials = Save->LastRoom.Len() == 3 ? Save->LastRoom : FString(TEXT("AAA"));
+	RefreshInitialsLetters();
+	TitleText->SetText(FText::FromString(TEXT("ROOM CODE")));
+}
+
+void AGameFlowManager::StartVersus(const FString& Room)
+{
+	if (!Spawner || !Spawner->bAllowVersus || !GunClass)
+	{
+		return;
+	}
+	if (Versus)
+	{
+		Versus->OnEvent.RemoveAll(this);
+		Versus->Destroy();
+		Versus = nullptr;
+	}
+	State = EGameFlowState::Versus;
+	bVersusPlaced = false;
+	SetLeaderboardVisible(false);
+	ApplyWeapon(true);            // versus is gun only (the saved preference is left alone)
+	Spawner->ResetSpawner();      // no run, no enemies
+	Spawner->SetGamePaused(true); // no walking until the opponent is here
+
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	Versus = GetWorld()->SpawnActor<AVersusMatch>(AVersusMatch::StaticClass(), FTransform::Identity, Params);
+	Versus->OnEvent.AddUObject(this, &AGameFlowManager::HandleVersusEvent);
+	ShowVersusPanel(EVersusPanel::Pause, /*bReposition*/ false);
+	// The relay wants 3 x A-Z/0-9; players who never set initials get a random P## name.
+	const UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
+	const FString Name = Save->Initials.Len() == 3 ? Save->Initials : FString::Printf(TEXT("P%02d"), static_cast<int32>(FDateTime::Now().GetTicks() / ETimespan::TicksPerMillisecond % 100)) /* clock, not FMath::Rand: unseeded, so every fresh install got the same name */;
+	Versus->Begin(Room.ToUpper(), Name, Spawner);
+}
+
+void AGameFlowManager::LeaveVersus()
+{
+	if (Versus)
+	{
+		Versus->OnEvent.RemoveAll(this);
+		Versus->Destroy(); // leaves the room, gives the HUD back
+		Versus = nullptr;
+	}
+	bVersusPlaced = false;
+	VersusPanel = EVersusPanel::None;
+	if (Spawner)
+	{
+		Spawner->EndFreeRoam();
+		Spawner->SetHudOverride(false);
+		Spawner->SetGamePaused(false);
+	}
+	ApplyWeapon(IsGunAllowed() && UCyclopsSaveGame::LoadOrCreate()->bPreferGun);
+	ShowTitle();
+}
+
+void AGameFlowManager::ShowVersusPanel(EVersusPanel Panel, bool bReposition)
+{
+	if (!Versus)
+	{
+		return;
+	}
+	VersusPanel = Panel;
+	ClearButtons();
+	FString Title;
+	FString Subtitle;
+	switch (Panel)
+	{
+	case EVersusPanel::Death:
+		// No buttons: it goes away by itself when we respawn.
+		Title = TEXT("SHOT");
+		Subtitle = FString::Printf(TEXT("by %s - back in a moment\n%s"), *Versus->GetPeerName(), *Versus->GetScoreLine());
+		break;
+	case EVersusPanel::Results:
+		Title = Versus->GetResultTitle();
+		if (Versus->WantsRematch())
+		{
+			Subtitle = FString::Printf(TEXT("%s\nWaiting for %s..."), *Versus->GetScoreLine(), *Versus->GetPeerName());
+			ConfigureButton(0, EMenuButton::LeaveVersus, TEXT("LEAVE"), RowCentre, ButtonSize);
+		}
+		else
+		{
+			Subtitle = Versus->GetScoreLine();
+			if (Versus->PeerWantsRematch())
+			{
+				Subtitle += FString::Printf(TEXT("\n%s wants a rematch"), *Versus->GetPeerName());
+			}
+			ConfigureButton(0, EMenuButton::Rematch, TEXT("REMATCH"), RowCentre, ButtonSize);
+			ConfigureButton(1, EMenuButton::LeaveVersus, TEXT("LEAVE"), RowLeft, ButtonSize);
+		}
+		break;
+	default: // pause / waiting for an opponent / error
+		Title = TEXT("VERSUS");
+		Subtitle = Versus->DescribeStatus();
+		if (bVersusPlaced && Versus->IsPaired())
+		{
+			ConfigureButton(0, EMenuButton::Resume, TEXT("RESUME"), RowCentre, ButtonSize);
+			ConfigureButton(1, EMenuButton::LeaveVersus, TEXT("LEAVE"), RowLeft, ButtonSize);
+		}
+		else
+		{
+			ConfigureButton(0, EMenuButton::LeaveVersus, TEXT("LEAVE"), RowCentre, ButtonSize);
+		}
+		break;
+	}
+	SetInitialsVisible(false);
+	SetLeaderboardVisible(false);
+	ShowMenu(Title, Subtitle, bReposition);
+}
+
+void AGameFlowManager::PauseVersus()
+{
+	// Only stops our walking: the other player keeps playing (and can still shoot us).
+	if (Spawner)
+	{
+		Spawner->SetGamePaused(true);
+	}
+	PlayUISound(PauseSound);
+	ShowVersusPanel(EVersusPanel::Pause, /*bReposition*/ true);
+}
+
+void AGameFlowManager::ResumeVersus()
+{
+	HideMenu(); // also brings the HUD back (score, health, time)
+	VersusPanel = EVersusPanel::None;
+	if (Spawner)
+	{
+		Spawner->SetGamePaused(false);
+	}
+}
+
+void AGameFlowManager::HandleVersusEvent(EVersusEvent Event)
+{
+	if (!Versus || State != EGameFlowState::Versus)
+	{
+		return;
+	}
+	switch (Event)
+	{
+	case EVersusEvent::RoundStarted:
+		if (!bVersusPlaced)
+		{
+			// First round of the match: walking on, at our start (the match already placed us there).
+			bVersusPlaced = true;
+			if (Spawner)
+			{
+				Spawner->BeginFreeRoam(Versus->GetSlot());
+			}
+		}
+		ResumeVersus();
+		PlayUISound(ConfirmSound);
+		break;
+	case EVersusEvent::Died:
+		if (Spawner)
+		{
+			Spawner->SetGamePaused(true);
+		}
+		ShowVersusPanel(EVersusPanel::Death, /*bReposition*/ true);
+		break;
+	case EVersusEvent::Respawned:
+		if (VersusPanel == EVersusPanel::Death)
+		{
+			ResumeVersus();
+		}
+		break;
+	case EVersusEvent::RoundOver:
+		if (Spawner)
+		{
+			Spawner->SetGamePaused(true);
+		}
+		ShowVersusPanel(EVersusPanel::Results, /*bReposition*/ true);
+		break;
+	default: // Status / Score
+		if (!Versus->IsPaired() && VersusPanel == EVersusPanel::None)
+		{
+			PauseVersus(); // they left / connection lost mid-round: stop and say so
+		}
+		else if (VersusPanel != EVersusPanel::None)
+		{
+			ShowVersusPanel(VersusPanel, /*bReposition*/ false); // refresh the text and buttons
+		}
+		break;
+	}
+}
+
 void AGameFlowManager::HandlePauseInput(const FInputActionValue& Value)
 {
 	switch (State)
@@ -448,6 +646,17 @@ void AGameFlowManager::HandlePauseInput(const FInputActionValue& Value)
 		break;
 	case EGameFlowState::Playing: PauseGame(); break;
 	case EGameFlowState::Paused:  ResumeGame(); break;
+	case EGameFlowState::Versus:
+		// The death and results panels aren't pausable; the pause panel toggles.
+		if (VersusPanel == EVersusPanel::None)
+		{
+			PauseVersus();
+		}
+		else if (VersusPanel == EVersusPanel::Pause && bVersusPlaced && Versus && Versus->IsPaired())
+		{
+			ResumeVersus();
+		}
+		break;
 	default: break; // game over: choose from the menu
 	}
 }
@@ -471,9 +680,17 @@ void AGameFlowManager::ShowTitle(bool bReposition)
 	{
 		ConfigureButton(2, EMenuButton::SwitchLevel, OtherLevelLabel, RowLeft, ButtonSize);
 	}
+	// Small buttons under the main row: weapon toggle and versus side by side (or one centred).
+	const bool bOfferVersus = Spawner && Spawner->bAllowVersus && GunClass;
+	const float SmallButtonSide = IsGunAllowed() && bOfferVersus ? WeaponToggleSize.X * 0.5f + 4.f : 0.f;
 	if (IsGunAllowed())
 	{
-		ConfigureButton(3, EMenuButton::ToggleWeapon, bUsingGun ? TEXT("USE BEAM") : TEXT("USE GUN"), WeaponTogglePosition, WeaponToggleSize, 5.5f);
+		ConfigureButton(3, EMenuButton::ToggleWeapon, bUsingGun ? TEXT("USE BEAM") : TEXT("USE GUN"),
+			WeaponTogglePosition + FVector2D(SmallButtonSide, 0.f), WeaponToggleSize, 5.5f);
+	}
+	if (bOfferVersus)
+	{
+		ConfigureButton(4, EMenuButton::Versus, TEXT("VERSUS"), WeaponTogglePosition - FVector2D(SmallButtonSide, 0.f), WeaponToggleSize, 5.5f);
 	}
 
 	FString Subtitle = GetModeName() + (bUsingGun ? TEXT("      Shoot START to begin      Menu button pauses") : TEXT("      Blast START to begin      Menu button pauses"));
@@ -493,6 +710,10 @@ void AGameFlowManager::StartGame()
 	SetInitialsVisible(false);
 	SetLeaderboardVisible(false);
 	bEditingInitials = false;
+	if (Gun)
+	{
+		Gun->Refill(); // every run starts with a full magazine
+	}
 	// Restarting from the pause or game-over menu: unfreeze and start with a full charge.
 	SetBeamsPaused(false, /*bRefill*/ State == EGameFlowState::Paused || State == EGameFlowState::GameOver);
 	State = EGameFlowState::Playing;
@@ -862,6 +1083,10 @@ void AGameFlowManager::ShowMenu(const FString& Title, const FString& Subtitle, b
 		SetButtonCollision(Slot.Panel, Slot.Action != EMenuButton::None);
 	}
 	bMenuVisible = true;
+	if (Gun)
+	{
+		Gun->SetFreeFire(true); // shooting menu buttons doesn't use ammo
+	}
 	MenuOpenTime = GetWorld()->GetTimeSeconds();
 	if (Spawner)
 	{
@@ -877,6 +1102,10 @@ void AGameFlowManager::HideMenu()
 		SetButtonCollision(Slot.Panel, false);
 	}
 	bMenuVisible = false;
+	if (Gun)
+	{
+		Gun->SetFreeFire(false);
+	}
 	if (Spawner)
 	{
 		Spawner->SetScoreboardVisible(true);
@@ -1000,7 +1229,10 @@ void AGameFlowManager::PressButton(EMenuButton Action, int32 Param)
 		}
 		StartGame();
 		break;
-	case EMenuButton::Resume:     ResumeGame(); break;
+	case EMenuButton::Resume:     State == EGameFlowState::Versus ? ResumeVersus() : ResumeGame(); break;
+	case EMenuButton::Versus:     ShowRoomEditor(); break;
+	case EMenuButton::LeaveVersus: LeaveVersus(); break;
+	case EMenuButton::Rematch:    if (Versus) { Versus->RequestRematch(); } break;
 	case EMenuButton::MainMenu:   ShowTitle(); break;
 	case EMenuButton::EditName:   ShowInitialsEditor(/*bReposition*/ false); break;
 	case EMenuButton::SwitchLevel:
@@ -1016,6 +1248,17 @@ void AGameFlowManager::PressButton(EMenuButton Action, int32 Param)
 	case EMenuButton::NameDone:
 	{
 		UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
+		if (bEditingRoom)
+		{
+			// The letters were a versus room code, not initials.
+			bEditingRoom = false;
+			bEditingInitials = false;
+			SetInitialsVisible(false);
+			Save->LastRoom = EditInitials;
+			Save->Save();
+			StartVersus(EditInitials);
+			break;
+		}
 		Save->Initials = EditInitials;
 		Save->Save();
 		if (State == EGameFlowState::GameOver)

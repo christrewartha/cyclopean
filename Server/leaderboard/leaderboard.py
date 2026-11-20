@@ -11,6 +11,7 @@ Each mode (game level) has its own board. "mode" defaults to "arena" (builds bef
        header X-Signature: hex HMAC-SHA1(LEADERBOARD_SECRET, raw body)   (required if a secret is set)
   GET  /                         -> simple HTML table
   GET  /healthz                  -> "ok"
+  GET  /ws/v1/match  (WebSocket) -> versus relay, see relay.py
 
 The HMAC key ships inside the game, so it only stops casual junk, not a determined cheat. For a handful
 of testers that is the right trade-off; the plausibility checks below catch the obviously impossible.
@@ -32,6 +33,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+
+import relay
 
 SECRET = os.environ.get("LEADERBOARD_SECRET", "").encode("utf-8")
 DB_PATH = os.environ.get("LEADERBOARD_DB", "/data/leaderboard.sqlite3")
@@ -163,6 +166,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
+        if url.path == relay.PATH and relay.is_upgrade(self):
+            relay.handle(self, self.client_ip())
+            return
         if url.path == "/healthz":
             data = b"ok"
             self.send_response(200)

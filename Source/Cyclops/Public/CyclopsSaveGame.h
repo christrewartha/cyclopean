@@ -44,6 +44,9 @@ public:
 
 	UPROPERTY() TArray<FPendingScore> PendingScores;
 
+	/** Last versus room code typed (offered again next time). */
+	UPROPERTY() FString LastRoom;
+
 	/** Last weapon chosen on a level that offers the hand gun (true = gun, false = optic blast). */
 	UPROPERTY() bool bPreferGun = false;
 };

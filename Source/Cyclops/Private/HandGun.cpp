@@ -29,6 +29,11 @@ namespace
 	constexpr double AimOvershoot = 5.0;
 	const FVector FlashScale(0.09, 0.05, 0.05); // ~9 x 5 cm, stretched down the barrel
 	const FLinearColor FlashColour(1.f, 0.85f, 0.5f);
+	// Ammo pips sitting on top of the slide, rear first (aim-pivot space, cm). The slide top is flat at z 8.85 from
+	// x -9.8 to -1.8 (measured with Saved/ClaudeTools/measure_gun.py); the pips sit just above it.
+	const FVector PipFirst(-9.0, 0.0, 9.1);
+	constexpr double PipSpacing = 1.3;
+	const FVector PipScale(0.008, 0.008, 0.003); // 0.8 x 0.8 x 0.3 cm (engine cube is 100 cm)
 
 	/**
 	 * Hides (or restores) the player's VR hands: the template pawn's HandLeft/HandRight mannequin hands and its
@@ -69,6 +74,10 @@ AHandGun::AHandGun()
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> Glow(TEXT("/Game/Cyclops/Materials/M_HudBar.M_HudBar"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> Hole(TEXT("/Game/Cyclops/Materials/M_ScorchDecal.M_ScorchDecal"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> ReloadButton(TEXT("/Game/Cyclops/Input/IA_OpticBlast.IA_OpticBlast"));
+	static ConstructorHelpers::FObjectFinder<USoundBase> ReloadStart(TEXT("/Game/Cyclops/Audio/SW_UIConfirm.SW_UIConfirm"));
+	static ConstructorHelpers::FObjectFinder<USoundBase> ReloadDone(TEXT("/Game/Cyclops/Audio/SW_BeamReady.SW_BeamReady"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	GunMesh = Pistol.Object;
 	FireSound = Shot.Object;
 	FireHaptic = Kick.Object;
@@ -78,6 +87,10 @@ AHandGun::AHandGun()
 	FlashMesh = Sphere.Object;
 	GlowMaterial = Glow.Object;
 	ImpactDecalMaterial = Hole.Object;
+	ReloadAction = ReloadButton.Object;
+	ReloadStartSound = ReloadStart.Object;
+	ReloadDoneSound = ReloadDone.Object;
+	PipMesh = Cube.Object;
 
 	// Root = the aiming pivot: rides on the camera at ViewOffset, its X axis turned onto the aim point.
 	AimPivot = CreateDefaultSubobject<USceneComponent>(TEXT("AimPivot"));
@@ -129,8 +142,99 @@ void AHandGun::BeginPlay()
 		}
 	}
 
+	// Ammo pips: a row of small lights along the top of the slide (aim-pivot space: X = barrel), where the player
+	// sees them without looking away from the target.
+	for (int32 i = 0; i < MagazineSize; ++i)
+	{
+		UStaticMeshComponent* Pip = MakeGlowMesh(*FString::Printf(TEXT("AmmoPip%d"), i), PipMesh, RoundColour);
+		if (!Pip)
+		{
+			break;
+		}
+		Pip->AttachToComponent(AimPivot, FAttachmentTransformRules::KeepRelativeTransform);
+		Pip->SetUsingAbsoluteLocation(false);
+		Pip->SetUsingAbsoluteRotation(false);
+		Pip->SetUsingAbsoluteScale(false);
+		Pip->SetRelativeTransform(FTransform(FRotator::ZeroRotator, PipFirst + FVector(PipSpacing * i, 0.0, 0.0), PipScale));
+		Pip->SetHiddenInGame(false);
+		AmmoPips.Add(Pip);
+	}
+	Ammo = MagazineSize;
+	UpdateAmmoPips();
+
 	TryAttachToView();
 	TryBindInput();
+}
+
+void AHandGun::HandleReload(const FInputActionValue& Value)
+{
+	Reload();
+}
+
+void AHandGun::Reload()
+{
+	if (IsReloading() || Ammo >= MagazineSize)
+	{
+		return;
+	}
+	ReloadRemaining = ReloadTime;
+	if (ReloadStartSound)
+	{
+		UGameplayStatics::PlaySound2D(this, ReloadStartSound, 0.5f, 0.7f);
+	}
+	UpdateAmmoPips();
+}
+
+void AHandGun::Refill()
+{
+	Ammo = MagazineSize;
+	ReloadRemaining = -1.f;
+	UpdateAmmoPips();
+}
+
+void AHandGun::UpdateReload(float DeltaSeconds)
+{
+	if (!IsReloading())
+	{
+		return;
+	}
+	ReloadRemaining -= DeltaSeconds;
+	if (ReloadRemaining <= 0.f)
+	{
+		ReloadRemaining = -1.f;
+		Ammo = MagazineSize;
+		if (ReloadDoneSound)
+		{
+			UGameplayStatics::PlaySound2D(this, ReloadDoneSound, 0.5f, 1.3f);
+		}
+		if (APlayerController* PC = GetWorld()->GetFirstPlayerController(); PC && FireHaptic)
+		{
+			PC->PlayHapticEffect(FireHaptic, EControllerHand::Right, 0.3f); // a light click: ready
+		}
+	}
+	UpdateAmmoPips();
+}
+
+void AHandGun::UpdateAmmoPips()
+{
+	// While reloading the pips refill one by one in the reload colour; otherwise lit = rounds left.
+	const bool bReloading = IsReloading();
+	const int32 Lit = bReloading
+		? FMath::FloorToInt(MagazineSize * (1.f - ReloadRemaining / FMath::Max(ReloadTime, KINDA_SMALL_NUMBER)))
+		: Ammo;
+	const int32 State = (bReloading ? 1000 : 0) + Lit;
+	if (State == LastPipState)
+	{
+		return;
+	}
+	LastPipState = State;
+	const FLinearColor& Full = bReloading ? ReloadingColour : RoundColour;
+	for (int32 i = 0; i < AmmoPips.Num(); ++i)
+	{
+		// Rounds are used from the front of the row, so what's left sits at the back, nearest the eye.
+		const FLinearColor& Colour = i < Lit ? Full : EmptyColour;
+		AmmoPips[i]->SetCustomPrimitiveDataVector4(0, FVector4(Colour.R, Colour.G, Colour.B, 1.0));
+	}
 }
 
 void AHandGun::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -226,6 +330,10 @@ bool AHandGun::TryBindInput()
 	{
 		Input->BindAction(FireActionLeft, ETriggerEvent::Started, this, &AHandGun::HandleFireLeft);
 	}
+	if (ReloadAction)
+	{
+		Input->BindAction(ReloadAction, ETriggerEvent::Started, this, &AHandGun::HandleReload);
+	}
 	BoundController = PC;
 	return true;
 }
@@ -283,7 +391,13 @@ void AHandGun::UpdatePose(float DeltaSeconds)
 	{
 		return;
 	}
-	const FRotator Wanted = FRotationMatrix::MakeFromXZ(Barrel, FVector::UpVector).Rotator();
+	FRotator Wanted = FRotationMatrix::MakeFromXZ(Barrel, FVector::UpVector).Rotator();
+	if (IsReloading())
+	{
+		// Dip the gun down and back up over the reload.
+		const float Progress = 1.f - ReloadRemaining / FMath::Max(ReloadTime, KINDA_SMALL_NUMBER);
+		Wanted.Pitch -= ReloadDipAngle * FMath::Sin(PI * Progress);
+	}
 	const FRotator Current = bHasAimRotation ? AimPivot->GetRelativeRotation() : Wanted;
 	AimPivot->SetRelativeRotation(FMath::RInterpTo(Current, Wanted, DeltaSeconds, AimTurnSpeed));
 	bHasAimRotation = true;
@@ -318,6 +432,7 @@ void AHandGun::Tick(float DeltaSeconds)
 		}
 	}
 	UpdateTracers(DeltaSeconds);
+	UpdateReload(DeltaSeconds);
 }
 
 FVector AHandGun::GetMuzzleLocation() const
@@ -413,7 +528,7 @@ void AHandGun::Fire()
 void AHandGun::FireFrom(EControllerHand TriggerHand)
 {
 	const float Now = GetWorld()->GetTimeSeconds();
-	if (Now - LastShotTime < MinShotInterval)
+	if (!bCanFire || Now - LastShotTime < MinShotInterval)
 	{
 		return;
 	}
@@ -421,6 +536,17 @@ void AHandGun::FireFrom(EControllerHand TriggerHand)
 	if (!GetEye(Eye, LookDirection))
 	{
 		return;
+	}
+	// Out of rounds (or mid-reload): no shot. An empty trigger pull starts the reload if it hasn't begun.
+	if (!bFreeFire)
+	{
+		if (IsReloading() || Ammo <= 0)
+		{
+			Reload();
+			return;
+		}
+		--Ammo;
+		UpdateAmmoPips();
 	}
 	LastShotTime = Now;
 
@@ -448,6 +574,11 @@ void AHandGun::FireFrom(EControllerHand TriggerHand)
 		PC->PlayHapticEffect(FireHaptic, TriggerHand); // kick in the hand that pulled the trigger
 	}
 	SpawnTracer(Muzzle, End);
+	OnShot.Broadcast(Muzzle, End);
+	if (!bFreeFire && Ammo <= 0)
+	{
+		Reload(); // last round gone: reload straight away
+	}
 
 	if (!bHit)
 	{

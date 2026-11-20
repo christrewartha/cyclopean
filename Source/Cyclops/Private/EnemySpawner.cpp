@@ -426,8 +426,41 @@ bool AEnemySpawner::AttachHudToCamera()
 	return true;
 }
 
+void AEnemySpawner::SetHudOverride(bool bOverride, const FString& Left, const FString& Right, bool bWarn)
+{
+	bHudOverride = bOverride;
+	if (!bOverride)
+	{
+		HudLeft.Reset();
+		HudRight.Reset();
+		UpdateScoreboard();
+		return;
+	}
+	// Called every frame by the versus match: only touch the text renders when the text actually changes.
+	if (HudLeft != Left)
+	{
+		HudLeft = Left;
+		Scoreboard->SetText(FText::FromString(Left));
+	}
+	if (HudRight != Right)
+	{
+		HudRight = Right;
+		LivesText->SetText(FText::FromString(Right));
+	}
+	LivesText->SetTextRenderColor(bWarn ? FColor(255, 70, 50) : FColor(255, 200, 120));
+	LayoutHudPlates(this, Scoreboard, LivesText, HudTextSize);
+	if (!bHudAttached && AttachHudToCamera())
+	{
+		SetScoreboardVisible(bHudVisible);
+	}
+}
+
 void AEnemySpawner::UpdateScoreboard()
 {
+	if (bHudOverride)
+	{
+		return; // something else (versus) owns the HUD text
+	}
 	const int32 Multiplier = GetMultiplier();
 	const FString Combo = Multiplier > 1 ? FString::Printf(TEXT("  x%d"), Multiplier) : FString();
 	Scoreboard->SetText(FText::FromString(FString::Printf(TEXT("SCORE %d%s"), Score, *Combo)));

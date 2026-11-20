@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 WORKDIR /app
-COPY leaderboard.py .
+COPY leaderboard.py relay.py ./
 ENV LEADERBOARD_DB=/data/leaderboard.sqlite3 \
     LEADERBOARD_PORT=8797 \
     PYTHONUNBUFFERED=1

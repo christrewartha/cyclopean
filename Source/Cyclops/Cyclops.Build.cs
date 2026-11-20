@@ -27,6 +27,8 @@ public class Cyclops : ModuleRules
 			// Walking enemies (AAIController pathfinding on the navmesh).
 			"AIModule",
 			"NavigationSystem",
+			// Versus relay client.
+			"WebSockets",
 		});
 	}
 }

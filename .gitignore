@@ -35,3 +35,6 @@ Build/*/FileOpenOrder/
 Server/leaderboard/.env
 Server/leaderboard/data/
 Source/Cyclops/Private/LeaderboardSecrets.h
+
+# Python bytecode (local relay/leaderboard runs)
+__pycache__/

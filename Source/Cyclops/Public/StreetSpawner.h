@@ -57,6 +57,26 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets|Spawning", meta = (ClampMin = "0"))
 	int32 ExtraMaxAliveAtExit = 2;
 
+	// ---- Versus ----
+
+	/** Slot 1 starts this far down the street from slot 0 (this actor), facing back towards them. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets|Versus", meta = (Units = "cm"))
+	float VersusStartSeparation = 2500.f;
+
+	virtual void BeginFreeRoam(int32 Slot) override;
+	virtual void EndFreeRoam() override;
+	virtual void RespawnFreeRoam(int32 Slot, const FVector& AvoidLocation) override;
+
+	/**
+	 * Versus respawns pick from the enemy spawn markers and the two starts, preferring ones the opponent can't see
+	 * (no building or car in between) at this distance band from them, so you come back out of sight but near the fight.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets|Versus", meta = (Units = "cm"))
+	float MinRespawnDistance = 1200.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets|Versus", meta = (Units = "cm"))
+	float MaxRespawnDistance = 4000.f;
+
 	// ---- Throwers (walkers that stop and throw rocks from range) ----
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Streets|Throwers", meta = (MustImplement = "/Script/Cyclops.CyclopsEnemy"))
@@ -133,6 +153,8 @@ protected:
 	virtual void OnRunStarted() override;
 	virtual void OnRunStopped() override;
 	virtual void OnPausedChanged(bool bPaused) override;
+	/** Turns and moves the play space so the head is over Location (on the floor) facing Yaw. */
+	void PlacePlayerAt(const FVector& Location, float Yaw);
 
 private:
 	struct FSpawnPoint
@@ -159,5 +181,6 @@ private:
 	TArray<FSpawnPoint> SpawnPoints;
 	FVector ExitLocation = FVector::ZeroVector;
 	bool bHasExit = false;
+	bool bFreeRoam = false;
 	TWeakObjectPtr<ULocomotionComponent> Locomotion;
 };

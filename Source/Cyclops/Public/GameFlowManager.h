@@ -6,6 +6,17 @@
 
 class AEnemySpawner;
 class AHandGun;
+class AVersusMatch;
+enum class EVersusEvent : uint8;
+
+/** Which versus panel the menu is showing (None = playing, menu hidden). */
+enum class EVersusPanel : uint8
+{
+	None,
+	Pause,    // pause / waiting for an opponent / connection error
+	Death,    // shot: until we respawn
+	Results,  // round over: rematch / leave
+};
 struct FLeaderboardResult;
 struct FRunResult;
 class UInputAction;
@@ -23,6 +34,7 @@ enum class EGameFlowState : uint8
 	Playing,
 	Paused,
 	GameOver,
+	Versus,      // online match (AVersusMatch); menu shows its status / pause
 };
 
 UENUM()
@@ -40,6 +52,9 @@ enum class EMenuButton : uint8
 	NameDone,
 	SwitchLevel,  // travel to OtherLevel and start straight away
 	ToggleWeapon, // optic blast <-> hand gun (levels whose spawner allows the gun)
+	Versus,       // pick a room code, then join an online match
+	LeaveVersus,
+	Rematch,
 };
 
 /**
@@ -70,6 +85,17 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Game Flow")
 	AHandGun* GetGun() const { return Gun; }
+
+	/** Joins an online match in Room (3 x A-Z/0-9): gun only, no enemies. Where the spawner allows versus. */
+	UFUNCTION(BlueprintCallable, Category = "Game Flow")
+	void StartVersus(const FString& Room);
+
+	/** Leaves the match and returns to the title. */
+	UFUNCTION(BlueprintCallable, Category = "Game Flow")
+	void LeaveVersus();
+
+	UFUNCTION(BlueprintPure, Category = "Game Flow")
+	AVersusMatch* GetVersus() const { return Versus; }
 
 	UFUNCTION(BlueprintCallable, Category = "Game Flow")
 	void StartGame();
@@ -212,6 +238,12 @@ private:
 	bool IsGunAllowed() const;
 	/** Enables the optic blast(s) or spawns the gun, and updates mode-dependent text. */
 	void ApplyWeapon(bool bUseGun);
+	// Versus.
+	void ShowRoomEditor();
+	void ShowVersusPanel(EVersusPanel Panel, bool bReposition);
+	void PauseVersus();
+	void ResumeVersus();
+	void HandleVersusEvent(EVersusEvent Event);
 	/** Applies pause state to every optic blast in the world (energy frozen while paused). */
 	void SetBeamsPaused(bool bPaused, bool bRefill) const;
 	void ApplyMeshesAndMaterials();
@@ -287,6 +319,13 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<AHandGun> Gun;
+
+	UPROPERTY(Transient)
+	TObjectPtr<AVersusMatch> Versus;
+
+	bool bEditingRoom = false;   // the initials editor is picking a versus room code
+	bool bVersusPlaced = false;  // moved to our start position (once per match)
+	EVersusPanel VersusPanel = EVersusPanel::None;
 
 	TArray<FButtonSlot> Slots;
 	EGameFlowState State = EGameFlowState::Title;

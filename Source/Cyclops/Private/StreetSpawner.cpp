@@ -28,6 +28,7 @@ AStreetSpawner::AStreetSpawner()
 	LeaderboardMode = TEXT("streets");
 	ModeName = TEXT("STREETS");
 	bAllowGun = true;
+	bAllowVersus = true;
 	EnemyClass = AWalkingEnemy::StaticClass();
 	bAutoStart = false;
 
@@ -318,11 +319,16 @@ void AStreetSpawner::UpdateLocomotion()
 {
 	if (ULocomotionComponent* Component = Locomotion.Get())
 	{
-		Component->SetMovementEnabled(bRunActive && !bGamePaused);
+		Component->SetMovementEnabled((bRunActive || bFreeRoam) && !bGamePaused);
 	}
 }
 
 void AStreetSpawner::PlacePlayerAtStart()
+{
+	PlacePlayerAt(GetActorLocation(), GetActorRotation().Yaw);
+}
+
+void AStreetSpawner::PlacePlayerAt(const FVector& Location, float Yaw)
 {
 	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
 	APawn* Pawn = PC ? PC->GetPawn() : nullptr;
@@ -333,12 +339,119 @@ void AStreetSpawner::PlacePlayerAtStart()
 	const FVector Head = PC->PlayerCameraManager->GetCameraLocation();
 	const float HeadYaw = PC->PlayerCameraManager->GetCameraRotation().Yaw;
 
-	// Turn the play space so the player faces down the street, then move it so the head is over the start.
-	const FRotator Turn(0.f, GetActorRotation().Yaw - HeadYaw, 0.f);
+	// Turn the play space so the player faces Yaw, then move it so the head is over Location.
+	const FRotator Turn(0.f, Yaw - HeadYaw, 0.f);
 	FVector PawnLocation = Head + Turn.RotateVector(Pawn->GetActorLocation() - Head);
-	PawnLocation += FVector(GetActorLocation().X - Head.X, GetActorLocation().Y - Head.Y, 0.0);
-	PawnLocation.Z = GetActorLocation().Z; // play-space origin is the floor
+	PawnLocation += FVector(Location.X - Head.X, Location.Y - Head.Y, 0.0);
+	PawnLocation.Z = Location.Z; // play-space origin is the floor
 	Pawn->SetActorLocationAndRotation(PawnLocation, Pawn->GetActorRotation() + Turn);
+}
+
+void AStreetSpawner::BeginFreeRoam(int32 Slot)
+{
+	bFreeRoam = true;
+	EnsureLocomotion();
+	// Slot 0 at the route start facing down the street; slot 1 further down, facing back.
+	const FVector Forward = FRotator(0.f, GetActorRotation().Yaw, 0.f).Vector();
+	if (Slot == 1)
+	{
+		PlacePlayerAt(GetActorLocation() + Forward * VersusStartSeparation, GetActorRotation().Yaw + 180.f);
+	}
+	else
+	{
+		PlacePlayerAtStart();
+	}
+	UpdateLocomotion();
+}
+
+void AStreetSpawner::RespawnFreeRoam(int32 Slot, const FVector& AvoidLocation)
+{
+	const FVector Forward = FRotator(0.f, GetActorRotation().Yaw, 0.f).Vector();
+	const FVector Starts[2] = { GetActorLocation(), GetActorLocation() + Forward * VersusStartSeparation };
+	const int32 OwnStart = FMath::Clamp(Slot, 0, 1);
+
+	// No opponent to hide from (round start / they're dead): our own start, facing down the street to the other one.
+	if (AvoidLocation.X > 1.0e6)
+	{
+		PlacePlayerAt(Starts[OwnStart], GetActorRotation().Yaw + (OwnStart == 1 ? 180.f : 0.f));
+		return;
+	}
+
+	struct FCandidate
+	{
+		FVector Location;
+		float Distance = 0.f;
+		bool bHidden = false;
+	};
+	TArray<FCandidate> Candidates;
+	TArray<FVector> Points = { Starts[0], Starts[1] };
+	for (const FSpawnPoint& Point : SpawnPoints)
+	{
+		Points.Add(Point.Location);
+	}
+	// Can the opponent see a head standing there? Only level geometry (buildings, cars) hides you.
+	constexpr double EyeHeight = 160.0;
+	const FCollisionQueryParams Params(SCENE_QUERY_STAT(VersusRespawn), /*bTraceComplex*/ false);
+	for (const FVector& Point : Points)
+	{
+		FHitResult Hit;
+		const bool bOutOfSight = GetWorld()->LineTraceSingleByObjectType(Hit, AvoidLocation, Point + FVector(0.0, 0.0, EyeHeight),
+			FCollisionObjectQueryParams(ECC_WorldStatic), Params);
+		Candidates.Add({ Point, static_cast<float>(FVector::Dist2D(Point, AvoidLocation)), bOutOfSight });
+	}
+
+	// Best: hidden and in the distance band (random among them, so respawns aren't predictable). Then hidden and far
+	// enough (nearest first), then anything far enough, then simply the farthest.
+	TArray<const FCandidate*> Tier;
+	for (const FCandidate& Candidate : Candidates)
+	{
+		if (Candidate.bHidden && Candidate.Distance >= MinRespawnDistance && Candidate.Distance <= MaxRespawnDistance)
+		{
+			Tier.Add(&Candidate);
+		}
+	}
+	const FCandidate* Chosen = Tier.Num() ? Tier[FMath::RandRange(0, Tier.Num() - 1)] : nullptr;
+	auto NearestFarEnough = [&](bool bMustBeHidden) -> const FCandidate*
+	{
+		const FCandidate* Best = nullptr;
+		for (const FCandidate& Candidate : Candidates)
+		{
+			if (Candidate.Distance >= MinRespawnDistance && (Candidate.bHidden || !bMustBeHidden) && (!Best || Candidate.Distance < Best->Distance))
+			{
+				Best = &Candidate;
+			}
+		}
+		return Best;
+	};
+	if (!Chosen)
+	{
+		Chosen = NearestFarEnough(true);
+	}
+	if (!Chosen)
+	{
+		Chosen = NearestFarEnough(false);
+	}
+	if (!Chosen)
+	{
+		Chosen = &Candidates[0];
+		for (const FCandidate& Candidate : Candidates)
+		{
+			Chosen = Candidate.Distance > Chosen->Distance ? &Candidate : Chosen;
+		}
+	}
+
+	// Facing roughly towards the opponent, so you know which way the fight is.
+	const float Yaw = (AvoidLocation - Chosen->Location).Rotation().Yaw;
+	UE_LOG(LogStreetSpawner, Log, TEXT("Versus respawn at (%.0f, %.0f): %.0f m from the opponent, %s (%d hidden in range of %d points)"),
+		Chosen->Location.X, Chosen->Location.Y, Chosen->Distance / 100.f, Chosen->bHidden ? TEXT("hidden") : TEXT("IN VIEW"),
+		Tier.Num(), Candidates.Num());
+	PlacePlayerAt(Chosen->Location, Yaw);
+}
+
+void AStreetSpawner::EndFreeRoam()
+{
+	bFreeRoam = false;
+	UpdateLocomotion();
 }
 
 void AStreetSpawner::OnRunStarted()

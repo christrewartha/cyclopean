@@ -17,6 +17,9 @@ struct FInputActionValue;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogHandGun, Log, All);
 
+/** A shot left the muzzle and ended at End (hit point or max range). */
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnGunShot, const FVector& /*Muzzle*/, const FVector& /*End*/);
+
 /**
  * A pistol held FPS-style (the alternative to the optic blast): pull either trigger to fire one shot.
  *
@@ -53,6 +56,59 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Hand Gun")
 	FVector GetMuzzleLocation() const;
+
+	/** Every shot fired (e.g. so a versus match can show it to the other player). */
+	FOnGunShot OnShot;
+
+	/** Off (and hidden) while the player is dead in versus. */
+	void SetCanFire(bool bInCanFire) { bCanFire = bInCanFire; SetActorHiddenInGame(!bInCanFire); }
+
+	/** Starts a reload (no-op if already reloading or full). Also bound to A / X, and automatic when empty. */
+	UFUNCTION(BlueprintCallable, Category = "Hand Gun")
+	void Reload();
+
+	UFUNCTION(BlueprintPure, Category = "Hand Gun")
+	int32 GetAmmo() const { return Ammo; }
+
+	UFUNCTION(BlueprintPure, Category = "Hand Gun")
+	bool IsReloading() const { return ReloadRemaining >= 0.f; }
+
+	/** While on (a menu is open), shots don't use ammo, so menu buttons don't cost a magazine. */
+	void SetFreeFire(bool bInFreeFire) { bFreeFire = bInFreeFire; }
+
+	/** Full magazine, no reload in progress (respawn, new run). */
+	void Refill();
+
+	// ---- Magazine ----
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Gun|Magazine", meta = (ClampMin = "1"))
+	int32 MagazineSize = 6;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Gun|Magazine", meta = (ClampMin = "0.1", Units = "s"))
+	float ReloadTime = 1.5f;
+
+	/** How far the gun dips (pitch) at the middle of a reload. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Gun|Magazine", meta = (Units = "deg"))
+	float ReloadDipAngle = 28.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Gun|Magazine")
+	FLinearColor RoundColour = FLinearColor(1.f, 0.75f, 0.25f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Gun|Magazine")
+	FLinearColor ReloadingColour = FLinearColor(0.2f, 0.75f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Gun|Magazine")
+	FLinearColor EmptyColour = FLinearColor(0.06f, 0.05f, 0.04f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Gun|Magazine")
+	TObjectPtr<USoundBase> ReloadStartSound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Gun|Magazine")
+	TObjectPtr<USoundBase> ReloadDoneSound;
+
+	/** Engine cube for the ammo pips. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Gun|Magazine")
+	TObjectPtr<UStaticMesh> PipMesh;
 
 	// ---- Placement (head-locked) ----
 
@@ -180,6 +236,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Gun|Input")
 	TObjectPtr<UInputAction> FireActionLeft;
 
+	/** Early reload (A / X: the optic blast's button, unused while the gun is out). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Gun|Input")
+	TObjectPtr<UInputAction> ReloadAction;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -203,6 +263,10 @@ private:
 	bool TryBindInput();
 	/** Head-locked placement: pull back from walls, turn the barrel onto the aim point. */
 	void UpdatePose(float DeltaSeconds);
+	void HandleReload(const FInputActionValue& Value);
+	void UpdateReload(float DeltaSeconds);
+	/** Lights the pips: rounds left, or the refill progress while reloading. */
+	void UpdateAmmoPips();
 	bool GetEye(FVector& OutLocation, FVector& OutDirection) const;
 	FCollisionQueryParams MakeQueryParams() const;
 	void SpawnTracer(const FVector& Start, const FVector& End);
@@ -229,13 +293,22 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> TracerMeshes;
 
+	/** Ammo indicator along the top of the slide, rear to front. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> AmmoPips;
+
 	TArray<FTracer> Tracers;
 	TArray<TWeakObjectPtr<UDecalComponent>> ActiveDecals;
 	TWeakObjectPtr<APlayerController> BoundController;
 	TWeakObjectPtr<USceneComponent> ViewCamera;
 	float LastShotTime = -1000.f;
 	float FlashRemaining = 0.f;
+	int32 Ammo = 0;
+	float ReloadRemaining = -1.f; // < 0 = not reloading
+	int32 LastPipState = -1;      // what the pips currently show (only recolour on change)
+	bool bFreeFire = false;
 	float Retract = 0.f;          // how far the gun is currently pulled back towards the eyes (walls)
 	bool bAttached = false;
+	bool bCanFire = true;
 	bool bHasAimRotation = false;
 };
