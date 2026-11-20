@@ -13,7 +13,9 @@ struct FCollisionQueryParams;
  *
  * Left stick walks relative to where the head is looking; right stick snap-turns around the head. Movement is a
  * collision sweep of a body-sized capsule under the HMD, sliding along walls and following the ground (steps/ramps),
- * so it works with the template pawn without a CharacterMovementComponent.
+ * so it works with the template pawn without a CharacterMovementComponent. Every frame the capsule is also pushed out
+ * of any wall the player has physically leaned or stepped into (room-scale) by shifting the play space back, so the
+ * head can never end up inside level geometry.
  *
  * While active, the template's own mapping context (teleport + left-stick snap turn) is swapped out for
  * IMC_Locomotion, and restored when the component is removed (the input subsystem survives level travel).
@@ -42,9 +44,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Locomotion", meta = (ClampMin = "0.1", ClampMax = "1"))
 	float SnapTurnThreshold = 0.7f;
 
-	/** Body capsule used for wall collision. */
+	/** Body capsule used for wall collision: the head is kept at least this far (horizontally) from walls. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Locomotion|Collision", meta = (Units = "cm"))
-	float BodyRadius = 22.f;
+	float BodyRadius = 25.f;
 
 	/** Ledges up to this high are stepped onto; anything taller blocks. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Locomotion|Collision", meta = (Units = "cm"))
@@ -73,6 +75,10 @@ private:
 	bool GetHead(FVector& OutLocation, FRotator& OutRotation) const;
 	void Walk(const FVector2D& Stick, float DeltaTime);
 	void SnapTurn(float Direction);
+	/** Shifts the play space so the body capsule under the head isn't inside any wall (room-scale leaning/walking). */
+	void PushOutOfWalls();
+	/** Centre of the body capsule: under the head, bottom just above step height so kerbs don't count as walls. */
+	FVector BodyCenter(const FVector& Head, float FloorZ) const;
 	/** Walkable floor under a point within a step of CurrentFloorZ (StepHeight up, MaxStepDown down). */
 	bool FindFloor(const FVector& Point, float CurrentFloorZ, float& OutFloorZ) const;
 	/** Query params ignoring the player and everything attached to them. */

@@ -1,6 +1,9 @@
 #include "LocomotionComponent.h"
 
+#include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Components/PrimitiveComponent.h"
+#include "Engine/OverlapResult.h"
 #include "CollisionQueryParams.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -21,6 +24,8 @@ namespace
 	constexpr float BodyHalfHeight = 60.f;
 	constexpr float MaxStepDown = 60.f;      // lowest floor change accepted in one move (stepping off a kerb)
 	constexpr float MinFloorNormalZ = 0.7f; // ~45 degree slopes
+	constexpr float WallSkin = 0.5f;        // gap left between the body and a wall after a blocked move / push-out
+	constexpr int32 MaxPushIterations = 4;  // corners need one pass per wall
 
 	/** Level geometry only: walls, cars, ground. Moving things (menu buttons, beams, props) never block or lift. */
 	FCollisionObjectQueryParams BlockingObjects()
@@ -84,6 +89,14 @@ void ULocomotionComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 bool ULocomotionComponent::GetHead(FVector& OutLocation, FRotator& OutRotation) const
 {
 	const APawn* Pawn = Cast<APawn>(GetOwner());
+	// The pawn's camera holds the HMD pose relative to the play space, so it follows any shift made earlier this
+	// frame (push-out, then walk). The camera manager's cached view would still be where the head was before it.
+	if (const UCameraComponent* Camera = Pawn ? Pawn->FindComponentByClass<UCameraComponent>() : nullptr)
+	{
+		OutLocation = Camera->GetComponentLocation();
+		OutRotation = Camera->GetComponentRotation();
+		return true;
+	}
 	const APlayerController* PC = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
 	if (!PC || !PC->PlayerCameraManager)
 	{
@@ -98,6 +111,8 @@ void ULocomotionComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	CheckForExternalHeightChange();
+	// Always, even with movement disabled (menus): physically leaning into a wall must never put the head inside it.
+	PushOutOfWalls();
 
 	const UEnhancedInputLocalPlayerSubsystem* Input = GetInputSubsystem();
 	const UEnhancedPlayerInput* PlayerInput = Input ? Input->GetPlayerInput() : nullptr;
@@ -194,27 +209,42 @@ void ULocomotionComponent::Walk(const FVector2D& Stick, float DeltaTime)
 	// Body capsule sits above step height, so low ledges don't block and are stepped onto below.
 	const FCollisionShape Body = FCollisionShape::MakeCapsule(BodyRadius, BodyHalfHeight);
 	const FCollisionQueryParams Params = MakeQueryParams(SCENE_QUERY_STAT_NAME_ONLY(LocomotionMove));
-	const FVector Start(Head.X, Head.Y, FloorZ + StepHeight + BodyHalfHeight + 1.f);
+	const FVector Start = BodyCenter(Head, FloorZ);
+
+	// Distance a sweep may travel before it hits, minus a small skin so the body never ends up touching the wall
+	// (a capsule resting exactly on a wall starts the next sweep "penetrating", which used to let it through).
+	auto Allowed = [](const FVector& Delta, const FHitResult& SweepHit)
+	{
+		return Delta.GetSafeNormal() * FMath::Max(0.f, SweepHit.Distance - WallSkin);
+	};
+	auto Horizontal = [](FVector V) { V.Z = 0.0; return V.GetSafeNormal(); };
 
 	FVector Moved = Desired;
 	FHitResult Hit;
-	if (GetWorld()->SweepSingleByObjectType(Hit, Start, Start + Desired, FQuat::Identity, BlockingObjects(), Body, Params)
-		&& !Hit.bStartPenetrating) // already inside something (room-scale): let them walk out
+	if (GetWorld()->SweepSingleByObjectType(Hit, Start, Start + Desired, FQuat::Identity, BlockingObjects(), Body, Params))
 	{
-		// Move up to the wall, then slide along it with what's left.
-		Moved = Desired * FMath::Max(0.f, Hit.Time - 0.01f);
-		FVector WallNormal = Hit.ImpactNormal;
-		WallNormal.Z = 0.0;
-		const FVector Slide = FVector::VectorPlaneProject(Desired - Moved, WallNormal.GetSafeNormal());
-		FHitResult SlideHit;
-		const FVector SlideStart = Start + Moved;
-		if (GetWorld()->SweepSingleByObjectType(SlideHit, SlideStart, SlideStart + Slide, FQuat::Identity, BlockingObjects(), Body, Params))
+		if (Hit.bStartPenetrating)
 		{
-			Moved += Slide * FMath::Max(0.f, SlideHit.Time - 0.01f);
+			// Still inside something PushOutOfWalls couldn't resolve: only allow the part of the move heading out.
+			const FVector Out = Horizontal(Hit.Normal);
+			Moved = Out * FMath::Max(0.0, Desired | Out);
 		}
 		else
 		{
-			Moved += Slide;
+			// Move up to the wall, then slide along it with what's left.
+			Moved = Allowed(Desired, Hit);
+			const FVector Slide = FVector::VectorPlaneProject(Desired - Moved, Horizontal(Hit.Normal));
+			FHitResult SlideHit;
+			const FVector SlideStart = Start + Moved;
+			if (!Slide.IsNearlyZero()
+				&& GetWorld()->SweepSingleByObjectType(SlideHit, SlideStart, SlideStart + Slide, FQuat::Identity, BlockingObjects(), Body, Params))
+			{
+				Moved += SlideHit.bStartPenetrating ? FVector::ZeroVector : Allowed(Slide, SlideHit);
+			}
+			else
+			{
+				Moved += Slide;
+			}
 		}
 	}
 
@@ -232,6 +262,74 @@ void ULocomotionComponent::Walk(const FVector2D& Stick, float DeltaTime)
 			NewFloorZ - FloorZ, Head.X + Moved.X, Head.Y + Moved.Y, FloorZ, NewFloorZ, Head.Z);
 	}
 	Pawn->AddActorWorldOffset(FVector(Moved.X, Moved.Y, NewFloorZ - FloorZ));
+	LastPawnZ = Pawn->GetActorLocation().Z;
+}
+
+FVector ULocomotionComponent::BodyCenter(const FVector& Head, const float FloorZ) const
+{
+	return FVector(Head.X, Head.Y, FloorZ + StepHeight + BodyHalfHeight + 1.f);
+}
+
+void ULocomotionComponent::PushOutOfWalls()
+{
+	AActor* Pawn = GetOwner();
+	FVector Head;
+	FRotator HeadRotation;
+	if (!Pawn || !GetHead(Head, HeadRotation))
+	{
+		return;
+	}
+
+	const float FloorZ = Pawn->GetActorLocation().Z;
+	const FVector Center = BodyCenter(Head, FloorZ);
+	const FCollisionShape Body = FCollisionShape::MakeCapsule(BodyRadius + WallSkin, BodyHalfHeight);
+	const FCollisionQueryParams Params = MakeQueryParams(SCENE_QUERY_STAT_NAME_ONLY(LocomotionPushOut));
+
+	// Horizontal only: the floor is handled by FindFloor, and the capsule sits above step height so only walls
+	// (buildings, cars) reach it. Re-query after each push so corners resolve against both walls.
+	FVector Push = FVector::ZeroVector;
+	for (int32 Iteration = 0; Iteration < MaxPushIterations; ++Iteration)
+	{
+		TArray<FOverlapResult> Overlaps;
+		if (!GetWorld()->OverlapMultiByObjectType(Overlaps, Center + Push, FQuat::Identity, BlockingObjects(), Body, Params))
+		{
+			break;
+		}
+		bool bPushed = false;
+		for (const FOverlapResult& Overlap : Overlaps)
+		{
+			UPrimitiveComponent* Component = Overlap.GetComponent();
+			FMTDResult MTD;
+			if (!Component || !Component->ComputePenetration(MTD, Body, Center + Push, FQuat::Identity))
+			{
+				continue;
+			}
+			// Escaping horizontally from a slanted push takes Distance / cos(angle to the horizontal).
+			const double HorizontalFraction = MTD.Direction.Size2D();
+			if (HorizontalFraction < 0.3 || MTD.Distance <= 0.f)
+			{
+				continue; // something mostly above/below the body, not a wall
+			}
+			const FVector Direction(MTD.Direction.X / HorizontalFraction, MTD.Direction.Y / HorizontalFraction, 0.0);
+			Push += Direction * (MTD.Distance / HorizontalFraction + 0.1f);
+			bPushed = true;
+		}
+		if (!bPushed)
+		{
+			break;
+		}
+	}
+
+	if (Push.IsNearlyZero(0.01))
+	{
+		return;
+	}
+	UE_CLOG(Push.Size2D() > 10.f, LogLocomotion, Log, TEXT("Pushed out of wall by %.0f cm at (%.0f, %.0f)"), Push.Size2D(), Head.X, Head.Y);
+
+	// Follow the ground where we land (normally unchanged); if there's none, still keep the head out of the wall.
+	float NewFloorZ = FloorZ;
+	FindFloor(Head + Push, FloorZ, NewFloorZ);
+	Pawn->AddActorWorldOffset(FVector(Push.X, Push.Y, NewFloorZ - FloorZ));
 	LastPawnZ = Pawn->GetActorLocation().Z;
 }
 
