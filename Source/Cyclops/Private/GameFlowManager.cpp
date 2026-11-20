@@ -9,6 +9,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EnemySpawner.h"
+#include "HandGun.h"
 #include "EngineUtils.h"
 #include "OpticBlastComponent.h"
 #include "EnhancedInputComponent.h"
@@ -32,6 +33,10 @@ namespace
 	const FVector2D RowCentre(0.f, ButtonZ);
 	const FVector2D RowLeft(72.f, ButtonZ);
 	const FVector2D RowRight(-72.f, ButtonZ);
+
+	// Small weapon toggle under the centre of the title row.
+	const FVector2D WeaponTogglePosition(0.f, -33.f);
+	const FVector2D WeaponToggleSize(52.f, 11.f);
 
 	// Background panel.
 	const FVector PanelCentre(-3.f, 0.f, 20.f);
@@ -135,6 +140,7 @@ namespace
 AGameFlowManager::AGameFlowManager()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	GunClass = AHandGun::StaticClass();
 
 	MenuRoot = CreateDefaultSubobject<USceneComponent>(TEXT("MenuRoot"));
 	RootComponent = MenuRoot;
@@ -358,7 +364,8 @@ void AGameFlowManager::BeginPlay()
 		Spawner->OnRunEnded.AddUObject(this, &AGameFlowManager::HandleRunEnded);
 	}
 
-	LeaderboardTitle->SetText(FText::FromString(GetModeName() + TEXT(" TOP 10")));
+	// Weapon: the remembered choice, where this level offers the gun (also sets the mode-dependent board title).
+	ApplyWeapon(IsGunAllowed() && UCyclopsSaveGame::LoadOrCreate()->bPreferGun);
 	SetInitialsVisible(false);
 	SetLeaderboardVisible(false);
 	HideMenu();
@@ -366,7 +373,67 @@ void AGameFlowManager::BeginPlay()
 	// Arriving from the other level's title (level switch): go straight into a run.
 	FTimerHandle Handle;
 	const bool bStartImmediately = GetWorld()->URL.HasOption(StartOption);
-	GetWorldTimerManager().SetTimer(Handle, this, bStartImmediately ? &AGameFlowManager::StartGame : &AGameFlowManager::ShowTitle, 0.5f, false);
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this, [this, bStartImmediately]()
+	{
+		bStartImmediately ? StartGame() : ShowTitle();
+	}), 0.5f, false);
+}
+
+bool AGameFlowManager::IsGunAllowed() const
+{
+	return Spawner && Spawner->bAllowGun && GunClass;
+}
+
+void AGameFlowManager::SetUseGun(bool bUseGun)
+{
+	bUseGun = bUseGun && IsGunAllowed();
+	UCyclopsSaveGame* Save = UCyclopsSaveGame::LoadOrCreate();
+	if (Save->bPreferGun != bUseGun)
+	{
+		Save->bPreferGun = bUseGun;
+		Save->Save();
+	}
+	ApplyWeapon(bUseGun);
+}
+
+void AGameFlowManager::ApplyWeapon(bool bUseGun)
+{
+	bUsingGun = bUseGun;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		if (UOpticBlastComponent* Beam = It->FindComponentByClass<UOpticBlastComponent>())
+		{
+			Beam->SetBlastEnabled(!bUseGun);
+		}
+	}
+	if (bUseGun && !Gun)
+	{
+		auto SpawnGun = [this]()
+		{
+			if (!bUsingGun || Gun)
+			{
+				return;
+			}
+			FActorSpawnParameters Params;
+			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			Gun = GetWorld()->SpawnActor<AHandGun>(GunClass, GetActorTransform(), Params); // attaches itself to the view
+		};
+		// Actors spawned during the level's initial BeginPlay pass can miss their own BeginPlay: wait a tick.
+		if (GetWorld()->HasBegunPlay())
+		{
+			SpawnGun();
+		}
+		else
+		{
+			GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, SpawnGun));
+		}
+	}
+	else if (!bUseGun && Gun)
+	{
+		Gun->Destroy();
+		Gun = nullptr;
+	}
+	LeaderboardTitle->SetText(FText::FromString(GetModeName() + TEXT(" TOP 10")));
 }
 
 void AGameFlowManager::HandlePauseInput(const FInputActionValue& Value)
@@ -385,7 +452,7 @@ void AGameFlowManager::HandlePauseInput(const FInputActionValue& Value)
 	}
 }
 
-void AGameFlowManager::ShowTitle()
+void AGameFlowManager::ShowTitle(bool bReposition)
 {
 	State = EGameFlowState::Title;
 	bEditingInitials = false;
@@ -404,15 +471,19 @@ void AGameFlowManager::ShowTitle()
 	{
 		ConfigureButton(2, EMenuButton::SwitchLevel, OtherLevelLabel, RowLeft, ButtonSize);
 	}
+	if (IsGunAllowed())
+	{
+		ConfigureButton(3, EMenuButton::ToggleWeapon, bUsingGun ? TEXT("USE BEAM") : TEXT("USE GUN"), WeaponTogglePosition, WeaponToggleSize, 5.5f);
+	}
 
-	FString Subtitle = GetModeName() + TEXT("      Blast START to begin      Menu button pauses");
+	FString Subtitle = GetModeName() + (bUsingGun ? TEXT("      Shoot START to begin      Menu button pauses") : TEXT("      Blast START to begin      Menu button pauses"));
 	if (const int32 Best = Save->GetBest(GetMode()); Best > 0)
 	{
 		Subtitle += FString::Printf(TEXT("\nYour best: %d"), Best);
 	}
 	SetInitialsVisible(false);
 	SetLeaderboardVisible(true);
-	ShowMenu(TEXT("CYCLOPS"), Subtitle);
+	ShowMenu(TEXT("CYCLOPS"), Subtitle, bReposition);
 	FetchLeaderboard();
 }
 
@@ -708,12 +779,14 @@ void AGameFlowManager::SetInitialsVisible(bool bVisible)
 
 FString AGameFlowManager::GetMode() const
 {
-	return Spawner && !Spawner->LeaderboardMode.IsEmpty() ? Spawner->LeaderboardMode : FString(TEXT("arena"));
+	const FString Level = Spawner && !Spawner->LeaderboardMode.IsEmpty() ? Spawner->LeaderboardMode : FString(TEXT("arena"));
+	return bUsingGun ? Level + TEXT("_gun") : Level; // gun runs get their own board (server MODES)
 }
 
 FString AGameFlowManager::GetModeName() const
 {
-	return Spawner && !Spawner->ModeName.IsEmpty() ? Spawner->ModeName : FString(TEXT("ARENA"));
+	const FString Level = Spawner && !Spawner->ModeName.IsEmpty() ? Spawner->ModeName : FString(TEXT("ARENA"));
+	return bUsingGun ? Level + TEXT(" GUN") : Level;
 }
 
 ULeaderboardSubsystem* AGameFlowManager::GetLeaderboard() const
@@ -933,6 +1006,10 @@ void AGameFlowManager::PressButton(EMenuButton Action, int32 Param)
 	case EMenuButton::SwitchLevel:
 		HideMenu();
 		UGameplayStatics::OpenLevelBySoftObjectPtr(this, OtherLevel, /*bAbsolute*/ true, StartOption);
+		break;
+	case EMenuButton::ToggleWeapon:
+		SetUseGun(!bUsingGun);
+		ShowTitle(/*bReposition*/ false);
 		break;
 	case EMenuButton::LetterUp:   StepLetter(1); break;   // hold the beam on it to keep stepping
 	case EMenuButton::LetterDown: StepLetter(-1); break;

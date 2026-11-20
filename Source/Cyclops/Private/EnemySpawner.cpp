@@ -1,5 +1,7 @@
 #include "EnemySpawner.h"
 
+#include "BodyLockComponent.h"
+
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/SceneComponent.h"
@@ -54,7 +56,7 @@ AEnemySpawner::AEnemySpawner()
 
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 
-	// HUD texts: moved onto the HMD camera beside the energy bar once the pawn exists (AttachHudToCamera).
+	// HUD texts: moved onto the body-locked HudAnchor once the pawn exists (AttachHudToCamera).
 	// Unlit so the HUD ignores scene lighting and fog (the engine's default text material is lit).
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> HudTextMaterial(TEXT("/Game/Cyclops/Materials/M_HudText.M_HudText"));
 	auto MakeHudText = [this](FName Name, EHorizTextAligment Align)
@@ -75,6 +77,9 @@ AEnemySpawner::AEnemySpawner()
 	};
 	Scoreboard = MakeHudText(TEXT("Scoreboard"), EHTA_Right);
 	LivesText = MakeHudText(TEXT("LivesText"), EHTA_Left);
+
+	HudAnchor = CreateDefaultSubobject<UBodyLockComponent>(TEXT("HudAnchor"));
+	HudAnchor->SetupAttachment(RootComponent);
 }
 
 void AEnemySpawner::BeginPlay()
@@ -377,26 +382,23 @@ bool AEnemySpawner::AttachHudToCamera()
 		return false;
 	}
 
-	// Line up with the energy bar (camera space: X forward, Y right, Z up).
-	FVector BarCentre(55.0, 0.0, -21.0);
-	double BarHalfWidth = 11.0;
-	const UOpticBlastComponent* Beam = nullptr;
+	// Body-locked, not head-locked: rides on HudAnchor (low in front, lazily following the player's facing), so the
+	// player glances down to read it instead of it sitting in their view. The anchor's space is like camera space
+	// (X away from the eye, Y right, Z up), centred on the HUD.
+	const FVector BarCentre = FVector::ZeroVector;
+	const UOpticBlastComponent* Beam = nullptr; // only for its HUD plate mesh/material
 	for (TActorIterator<AActor> It(GetWorld()); It && !Beam; ++It)
 	{
 		Beam = It->FindComponentByClass<UOpticBlastComponent>();
 	}
-	if (Beam)
-	{
-		BarCentre = Beam->EnergyBarOffset;
-		BarHalfWidth = Beam->EnergyBarSize.X * 0.5;
-	}
 
 	// Yaw 180 turns the text to face the eye; right-aligned grows to the player's left, left-aligned to the right.
-	const double Side = BarHalfWidth + HudGap;
+	const double Side = HudGap;
 	const FRotator FacingEye(0.f, 180.f, 0.f);
+	HudAnchor->Recenter();
 	for (UTextRenderComponent* Text : { Scoreboard.Get(), LivesText.Get() })
 	{
-		Text->AttachToComponent(Camera, FAttachmentTransformRules::KeepRelativeTransform);
+		Text->AttachToComponent(HudAnchor, FAttachmentTransformRules::KeepRelativeTransform);
 		Text->SetRelativeRotation(FacingEye);
 		Text->SetRelativeScale3D(FVector::OneVector);
 		Text->SetWorldSize(HudTextSize);
@@ -415,7 +417,7 @@ bool AEnemySpawner::AttachHudToCamera()
 			Plate->SetGenerateOverlapEvents(false);
 			Plate->SetCastShadow(false);
 			Plate->RegisterComponent();
-			Plate->AttachToComponent(Camera, FAttachmentTransformRules::KeepRelativeTransform);
+			Plate->AttachToComponent(HudAnchor, FAttachmentTransformRules::KeepRelativeTransform);
 			Plate->SetCustomPrimitiveDataVector4(0, FVector4(HudPlateColour.R, HudPlateColour.G, HudPlateColour.B, 1.0));
 		}
 	}

@@ -174,9 +174,32 @@ void UOpticBlastComponent::CreateBeamVisuals()
 // ---------------------------------------------------------------------------------------------------------
 // Firing / energy
 
+void UOpticBlastComponent::SetBlastEnabled(bool bEnabled)
+{
+	if (bBlastEnabled == bEnabled)
+	{
+		return;
+	}
+	bBlastEnabled = bEnabled;
+	if (!bEnabled)
+	{
+		StopFiring();
+		SetBeamVisible(false);
+		SetImpactLightVisible(false);
+	}
+	for (UStaticMeshComponent* Part : { BarBackground.Get(), BarFill.Get() })
+	{
+		if (Part)
+		{
+			Part->SetVisibility(bEnabled);
+		}
+	}
+	SetComponentTickEnabled(bEnabled);
+}
+
 void UOpticBlastComponent::StartFiring()
 {
-	if (bIsFiring)
+	if (bIsFiring || !bBlastEnabled)
 	{
 		return;
 	}
@@ -259,6 +282,13 @@ void UOpticBlastComponent::HandleFireStopped(const FInputActionValue& Value)
 void UOpticBlastComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	// Disabled before BeginPlay registered the tick (which re-enables it): stay off, and never create the bar.
+	if (!bBlastEnabled)
+	{
+		SetComponentTickEnabled(false);
+		return;
+	}
 
 	// Debug auto-fire behaves like a player: press when full, release when dry.
 	if (bDebugAutoFire)
@@ -594,7 +624,7 @@ void UOpticBlastComponent::SetImpactLightVisible(bool bVisible)
 
 bool UOpticBlastComponent::TryCreateEnergyBar()
 {
-	if (!bShowEnergyBar || !EnergyBarMesh)
+	if (!bShowEnergyBar || !EnergyBarMesh || !bBlastEnabled) // no power bar while the gun is in use
 	{
 		return false;
 	}
@@ -631,7 +661,7 @@ bool UOpticBlastComponent::TryCreateEnergyBar()
 
 void UOpticBlastComponent::UpdateEnergyBar(float Power)
 {
-	if (!BarFill && !TryCreateEnergyBar())
+	if (!bBlastEnabled || (!BarFill && !TryCreateEnergyBar()))
 	{
 		return;
 	}

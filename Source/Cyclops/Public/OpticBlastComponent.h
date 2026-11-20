@@ -48,6 +48,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Optic Blast")
 	bool IsFiring() const { return bIsFiring; }
 
+	/** Off when another weapon (the hand gun) is in use: no firing, beam and energy bar hidden. */
+	UFUNCTION(BlueprintCallable, Category = "Optic Blast")
+	void SetBlastEnabled(bool bEnabled);
+
+	UFUNCTION(BlueprintPure, Category = "Optic Blast")
+	bool IsBlastEnabled() const { return bBlastEnabled; }
+
 	// ---- Input ----
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Optic Blast|Input")
@@ -372,7 +379,8 @@ private:
 	float TimeSinceRelease = 0.f;
 	float LastHaptic = 0.f;
 	bool bIsFiring = false;
-	bool bDepleted = false;       // ran dry while held: no beam until released
+	bool bBlastEnabled = true;
+	bool bDepleted = false;      // ran dry while held: no beam until released
 	bool bBurstPending = false;
 	bool bEnergyFrozen = false;
 	bool bBeamVisible = false;

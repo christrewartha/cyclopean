@@ -5,6 +5,7 @@
 #include "EnemySpawner.generated.h"
 
 class USoundBase;
+class UBodyLockComponent;
 class UTextRenderComponent;
 
 /** Final stats of a run, broadcast when the player runs out of lives. */
@@ -94,6 +95,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawner|Level")
 	FString ModeName = TEXT("ARENA");
 
+	/**
+	 * Whether the title offers the hand gun as an alternative to the optic blast. Gun runs get their own board:
+	 * LeaderboardMode + "_gun" (which must also be in the server's MODES).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawner|Level")
+	bool bAllowGun = false;
+
 	// ---- Rules ----
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spawner|Rules", meta = (ClampMin = "1"))
@@ -181,15 +189,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spawner|Feedback", meta = (Units = "s"))
 	float HitHapticDuration = 0.25f;
 
-	// ---- HUD (head-locked, either side of the optic blast energy bar) ----
+	// ---- HUD (body-locked: low in front of the player, glance down to read; see UBodyLockComponent) ----
 
-	/** Text height at the bar's distance. */
+	/** Text height (the HUD sits ~80 cm from the eyes). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spawner|HUD", meta = (Units = "cm"))
-	float HudTextSize = 2.2f;
+	float HudTextSize = 3.2f;
 
-	/** Space between the end of the bar and the text. */
+	/** Gap either side of the HUD's centre line between score (left) and lives (right). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spawner|HUD", meta = (Units = "cm"))
-	float HudGap = 1.5f;
+	float HudGap = 2.f;
 
 protected:
 	virtual void BeginPlay() override;
@@ -229,16 +237,20 @@ private:
 	void ScheduleNextSpawn();
 	void UpdateScoreboard();
 	void StopHaptics();
-	/** Moves the HUD texts onto the HMD camera beside the energy bar; false until the pawn exists. */
+	/** Moves the HUD texts onto the body-locked anchor; false until the pawn exists. */
 	bool AttachHudToCamera();
 
-	/** Score + combo, left of the energy bar. */
+	/** Score + combo, left of centre. */
 	UPROPERTY(VisibleAnywhere, Category = "Spawner")
 	TObjectPtr<UTextRenderComponent> Scoreboard;
 
-	/** Lives, right of the energy bar. */
+	/** Lives, right of centre. */
 	UPROPERTY(VisibleAnywhere, Category = "Spawner")
 	TObjectPtr<UTextRenderComponent> LivesText;
+
+	/** Follows the player low and in front; the HUD texts and plates ride on it. */
+	UPROPERTY(VisibleAnywhere, Category = "Spawner")
+	TObjectPtr<UBodyLockComponent> HudAnchor;
 
 	bool bHudAttached = false;
 	bool bHudVisible = true;

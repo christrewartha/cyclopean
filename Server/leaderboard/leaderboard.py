@@ -45,7 +45,9 @@ MAX_POINTS_PER_KILL = 1000
 MAX_KILLS_PER_SECOND = 3.0
 # Level -> largest one-off bonus a run can add on top of kill points. Keep in sync with the game:
 #   streets = AStreetSpawner finish bonus: 1000 + 500 x 5 lives + 10 x 180 s under par.
-MODES = {"arena": 0, "streets": 1000 + 500 * 5 + 10 * 180}
+#   <level>_gun = the same level played with the hand gun instead of the optic blast (own board, same rules).
+STREETS_BONUS = 1000 + 500 * 5 + 10 * 180
+MODES = {"arena": 0, "streets": STREETS_BONUS, "streets_gun": STREETS_BONUS}
 DEFAULT_MODE = "arena"
 RATE_LIMIT_PER_MINUTE = 30
 

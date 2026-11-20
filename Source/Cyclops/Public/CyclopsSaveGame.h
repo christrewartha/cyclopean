@@ -43,4 +43,7 @@ public:
 	UPROPERTY() FString Initials;
 
 	UPROPERTY() TArray<FPendingScore> PendingScores;
+
+	/** Last weapon chosen on a level that offers the hand gun (true = gun, false = optic blast). */
+	UPROPERTY() bool bPreferGun = false;
 };

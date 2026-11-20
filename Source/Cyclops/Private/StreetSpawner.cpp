@@ -27,6 +27,7 @@ AStreetSpawner::AStreetSpawner()
 
 	LeaderboardMode = TEXT("streets");
 	ModeName = TEXT("STREETS");
+	bAllowGun = true;
 	EnemyClass = AWalkingEnemy::StaticClass();
 	bAutoStart = false;
 

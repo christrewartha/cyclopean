@@ -5,6 +5,7 @@
 #include "GameFlowManager.generated.h"
 
 class AEnemySpawner;
+class AHandGun;
 struct FLeaderboardResult;
 struct FRunResult;
 class UInputAction;
@@ -38,6 +39,7 @@ enum class EMenuButton : uint8
 	LetterDown,
 	NameDone,
 	SwitchLevel,  // travel to OtherLevel and start straight away
+	ToggleWeapon, // optic blast <-> hand gun (levels whose spawner allows the gun)
 };
 
 /**
@@ -57,7 +59,17 @@ public:
 	AGameFlowManager();
 
 	UFUNCTION(BlueprintCallable, Category = "Game Flow")
-	void ShowTitle();
+	void ShowTitle(bool bReposition = true);
+
+	/** Switches between the optic blast and the hand gun (only where the spawner allows the gun). Remembered. */
+	UFUNCTION(BlueprintCallable, Category = "Game Flow")
+	void SetUseGun(bool bUseGun);
+
+	UFUNCTION(BlueprintPure, Category = "Game Flow")
+	bool IsUsingGun() const { return bUsingGun; }
+
+	UFUNCTION(BlueprintPure, Category = "Game Flow")
+	AHandGun* GetGun() const { return Gun; }
 
 	UFUNCTION(BlueprintCallable, Category = "Game Flow")
 	void StartGame();
@@ -84,6 +96,10 @@ public:
 	/** Label for that button. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Flow|Levels")
 	FString OtherLevelLabel;
+
+	/** Spawned into the player's hand when the gun is selected. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Flow|Weapons")
+	TSubclassOf<AHandGun> GunClass;
 
 	/** Pause / resume (and start, from the title). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Flow|Input")
@@ -193,6 +209,9 @@ private:
 	FString GetMode() const;
 	FString GetModeName() const;
 	void PlayUISound(USoundBase* Sound) const;
+	bool IsGunAllowed() const;
+	/** Enables the optic blast(s) or spawns the gun, and updates mode-dependent text. */
+	void ApplyWeapon(bool bUseGun);
 	/** Applies pause state to every optic blast in the world (energy frozen while paused). */
 	void SetBeamsPaused(bool bPaused, bool bRefill) const;
 	void ApplyMeshesAndMaterials();
@@ -266,8 +285,12 @@ private:
 	UPROPERTY(VisibleAnywhere, Transient, Category = "Game Flow|Leaderboard")
 	TArray<TObjectPtr<UTextRenderComponent>> LeaderboardColumns;
 
+	UPROPERTY(Transient)
+	TObjectPtr<AHandGun> Gun;
+
 	TArray<FButtonSlot> Slots;
 	EGameFlowState State = EGameFlowState::Title;
+	bool bUsingGun = false;
 	bool bMenuVisible = false;
 	float MenuOpenTime = 0.f;
 
