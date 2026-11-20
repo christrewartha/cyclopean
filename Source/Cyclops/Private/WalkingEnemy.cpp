@@ -36,7 +36,7 @@ namespace
 	constexpr float StrikeReachFactor = 1.5f; // still in range if within this x AttackRange when the wind-up ends
 
 	template <typename T>
-	T* FindAsset(const TCHAR* Path)
+	T* FindWalkerAsset(const TCHAR* Path)
 	{
 		ConstructorHelpers::FObjectFinder<T> Finder(Path);
 		return Finder.Object;
@@ -47,14 +47,14 @@ AWalkingEnemy::AWalkingEnemy()
 {
 	PrimaryActorTick.bCanEverTick = true;
 
-	CubeMesh = FindAsset<UStaticMesh>(TEXT("/Engine/BasicShapes/Cube.Cube"));
-	SphereMesh = FindAsset<UStaticMesh>(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-	BodyMaterial = FindAsset<UMaterialInterface>(TEXT("/Game/Cyclops/Materials/MI_EnemyBody.MI_EnemyBody"));
-	EyeMaterial = FindAsset<UMaterialInterface>(TEXT("/Game/Cyclops/Materials/MI_EnemyEyes.MI_EnemyEyes"));
-	AnnounceSound = FindAsset<USoundBase>(TEXT("/Game/Cyclops/Audio/SW_WalkerMoan.SW_WalkerMoan"));
-	DeathSound = FindAsset<USoundBase>(TEXT("/Game/Cyclops/Audio/SW_EnemyDeath.SW_EnemyDeath"));
-	HeadshotSound = FindAsset<USoundBase>(TEXT("/Game/Cyclops/Audio/SW_Headshot.SW_Headshot"));
-	AttackSound = FindAsset<USoundBase>(TEXT("/Game/Cyclops/Audio/SW_WalkerAttack.SW_WalkerAttack"));
+	CubeMesh = FindWalkerAsset<UStaticMesh>(TEXT("/Engine/BasicShapes/Cube.Cube"));
+	SphereMesh = FindWalkerAsset<UStaticMesh>(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+	BodyMaterial = FindWalkerAsset<UMaterialInterface>(TEXT("/Game/Cyclops/Materials/MI_EnemyBody.MI_EnemyBody"));
+	EyeMaterial = FindWalkerAsset<UMaterialInterface>(TEXT("/Game/Cyclops/Materials/MI_EnemyEyes.MI_EnemyEyes"));
+	AnnounceSound = FindWalkerAsset<USoundBase>(TEXT("/Game/Cyclops/Audio/SW_WalkerMoan.SW_WalkerMoan"));
+	DeathSound = FindWalkerAsset<USoundBase>(TEXT("/Game/Cyclops/Audio/SW_EnemyDeath.SW_EnemyDeath"));
+	HeadshotSound = FindWalkerAsset<USoundBase>(TEXT("/Game/Cyclops/Audio/SW_Headshot.SW_Headshot"));
+	AttackSound = FindWalkerAsset<USoundBase>(TEXT("/Game/Cyclops/Audio/SW_WalkerAttack.SW_WalkerAttack"));
 
 	UCapsuleComponent* Capsule = GetCapsuleComponent();
 	Capsule->InitCapsuleSize(CapsuleRadius, CapsuleHalfHeight);
